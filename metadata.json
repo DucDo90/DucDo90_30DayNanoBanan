@@ -1,0 +1,5 @@
+{
+  "name": "30DayNanoBanana",
+  "description": "Upload an image and generate multiple camera angles (front, side, back, isometric) using the Gemini 30DayNanoBanana model.",
+  "requestFramePermissions": []
+}
