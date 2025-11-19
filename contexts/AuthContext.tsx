@@ -49,7 +49,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         name: foundUser.name,
         email: foundUser.email,
         provider: 'email',
-        avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(foundUser.name)}&background=6366f1&color=fff`
+        avatar: foundUser.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(foundUser.name)}&background=6366f1&color=fff`
       };
       setUser(userData);
       localStorage.setItem('nano_session', JSON.stringify(userData));
@@ -71,7 +71,14 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       return;
     }
 
-    const newUser = { id: Date.now().toString(), name, email, password: pass };
+    const newUser = { 
+      id: Date.now().toString(), 
+      name, 
+      email, 
+      password: pass,
+      provider: 'email',
+      avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=6366f1&color=fff`
+    };
     storedUsers.push(newUser);
     localStorage.setItem('nano_users', JSON.stringify(storedUsers));
 
@@ -81,7 +88,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       name: newUser.name,
       email: newUser.email,
       provider: 'email',
-      avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(newUser.name)}&background=6366f1&color=fff`
+      avatar: newUser.avatar
     };
     setUser(userData);
     localStorage.setItem('nano_session', JSON.stringify(userData));
@@ -90,34 +97,69 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
   const googleLogin = async () => {
     setIsLoading(true);
+    setError(null);
     // Simulate OAuth popup and return
     await new Promise(resolve => setTimeout(resolve, 1500));
     
-    const mockUser: User = {
-      id: 'google_123',
-      name: 'Google User',
-      email: 'user@gmail.com',
-      provider: 'google',
-      avatar: 'https://lh3.googleusercontent.com/a/default-user=s96-c'
+    const email = 'demo@gmail.com';
+    const storedUsers = JSON.parse(localStorage.getItem('nano_users') || '[]');
+    let foundUser = storedUsers.find((u: any) => u.email === email);
+
+    if (!foundUser) {
+        foundUser = {
+            id: 'google_' + Date.now(),
+            name: 'Demo User',
+            email: email,
+            provider: 'google',
+            avatar: 'https://lh3.googleusercontent.com/a/default-user=s96-c'
+        };
+        storedUsers.push(foundUser);
+        localStorage.setItem('nano_users', JSON.stringify(storedUsers));
+    }
+    
+    const userData: User = {
+        id: foundUser.id,
+        name: foundUser.name,
+        email: foundUser.email,
+        provider: 'google',
+        avatar: foundUser.avatar
     };
-    setUser(mockUser);
-    localStorage.setItem('nano_session', JSON.stringify(mockUser));
+
+    setUser(userData);
+    localStorage.setItem('nano_session', JSON.stringify(userData));
     setIsLoading(false);
   };
 
   const phoneLogin = async (phone: string) => {
     setIsLoading(true);
+    setError(null);
     await new Promise(resolve => setTimeout(resolve, 1000));
     
-    const mockUser: User = {
-      id: 'phone_' + phone,
-      name: `User ${phone.slice(-4)}`,
-      phone: phone,
-      provider: 'phone',
-      avatar: `https://ui-avatars.com/api/?name=${phone.slice(-2)}&background=10b981&color=fff`
+    const storedUsers = JSON.parse(localStorage.getItem('nano_users') || '[]');
+    let foundUser = storedUsers.find((u: any) => u.phone === phone);
+
+    if (!foundUser) {
+         foundUser = {
+            id: 'phone_' + phone.replace(/\D/g,''),
+            name: `User ${phone.slice(-4)}`,
+            phone: phone,
+            provider: 'phone',
+            avatar: `https://ui-avatars.com/api/?name=${phone.slice(-2)}&background=10b981&color=fff`
+          };
+          storedUsers.push(foundUser);
+          localStorage.setItem('nano_users', JSON.stringify(storedUsers));
+    }
+
+    const userData: User = {
+        id: foundUser.id,
+        name: foundUser.name,
+        phone: foundUser.phone,
+        provider: 'phone',
+        avatar: foundUser.avatar
     };
-    setUser(mockUser);
-    localStorage.setItem('nano_session', JSON.stringify(mockUser));
+
+    setUser(userData);
+    localStorage.setItem('nano_session', JSON.stringify(userData));
     setIsLoading(false);
   };
 

@@ -1,5 +1,5 @@
-
 import React, { useState, useEffect, useRef } from 'react';
+import { Sidebar, InputMode } from './components/Sidebar'; 
 import { UploadZone } from './components/UploadZone';
 import { GeneratedGrid } from './components/GeneratedGrid';
 import { GeneratedView, TARGET_ANGLES, FileUpload, AspectRatio, ASPECT_RATIOS, ImageQuality, QUALITY_OPTIONS, ImageFilter, FILTER_OPTIONS, ChatMessage } from './types';
@@ -19,15 +19,11 @@ const rotateImage = (base64Str: string, direction: 'clockwise' | 'counterclockwi
         reject(new Error('Canvas context not available'));
         return;
       }
-      
-      // Swap dimensions for 90 degree rotation
       canvas.width = img.height;
       canvas.height = img.width;
-      
       ctx.translate(canvas.width / 2, canvas.height / 2);
       ctx.rotate(direction === 'clockwise' ? 90 * Math.PI / 180 : -90 * Math.PI / 180);
       ctx.drawImage(img, -img.width / 2, -img.height / 2);
-      
       resolve(canvas.toDataURL());
     };
     img.onerror = (err) => reject(err);
@@ -35,17 +31,47 @@ const rotateImage = (base64Str: string, direction: 'clockwise' | 'counterclockwi
   });
 };
 
-type InputMode = 'upload' | 'prompt' | 'analyze' | 'edit' | 'video' | 'chat' | 'live';
 type LiveStatus = 'idle' | 'connecting' | 'connected' | 'error' | 'disconnected';
 
 const App: React.FC = () => {
   const { user, logout, isLoading: isAuthLoading } = useAuth();
+  const [inputMode, setInputMode] = useState<InputMode>('upload');
+  
+  // Core State
   const [upload, setUpload] = useState<FileUpload | null>(null);
   const [generatedViews, setGeneratedViews] = useState<GeneratedView[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>('1:1');
   const [quality, setQuality] = useState<ImageQuality>('medium');
-  const [currentLang, setCurrentLang] = useState<Language>('en');
+  
+  // Language State
+  const [currentLang, setCurrentLang] = useState<Language>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('app_lang');
+      if (saved && languages.some(l => l.id === saved)) {
+        return saved as Language;
+      }
+    }
+    return 'en';
+  });
+
+  useEffect(() => {
+    localStorage.setItem('app_lang', currentLang);
+  }, [currentLang]);
+
+  // Language Dropdown State
+  const [isLangOpen, setIsLangOpen] = useState(false);
+  const langMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+        if (langMenuRef.current && !langMenuRef.current.contains(event.target as Node)) {
+            setIsLangOpen(false);
+        }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
   
   // Theme State
   const [theme, setTheme] = useState(() => {
@@ -69,122 +95,87 @@ const App: React.FC = () => {
     setTheme(prev => prev === 'dark' ? 'light' : 'dark');
   };
   
-  // New states for Prompt Generation, Analysis, Edit & Video
-  const [inputMode, setInputMode] = useState<InputMode>('video');
+  // Feature Specific States
   const [prompt, setPrompt] = useState('');
   const [isGeneratingRef, setIsGeneratingRef] = useState(false);
 
-  // Analysis States
   const [analysisPrompt, setAnalysisPrompt] = useState('');
   const [analysisResult, setAnalysisResult] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
 
-  // Edit States
   const [editPrompt, setEditPrompt] = useState('');
   const [isEditing, setIsEditing] = useState(false);
 
-  // Video States
   const [videoPrompt, setVideoPrompt] = useState('');
   const [isGeneratingVideo, setIsGeneratingVideo] = useState(false);
   const [generatedVideoUrl, setGeneratedVideoUrl] = useState<string | null>(null);
   
-  // Chat States
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [isChatLoading, setIsChatLoading] = useState(false);
   const chatContainerRef = useRef<HTMLDivElement>(null);
 
-  // Live API State
   const [liveStatus, setLiveStatus] = useState<LiveStatus>('idle');
 
-  // Translation Helper
-  const t = (key: string) => translations[currentLang][key] || translations['en'][key] || key;
-
-  // Selection state for batch actions
+  // Selection State
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
-  // Scroll to bottom of chat
+  const t = (key: string) => translations[currentLang][key] || translations['en'][key] || key;
+
+  // Scroll chat
   useEffect(() => {
     if (chatContainerRef.current) {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
     }
   }, [chatMessages]);
 
-  // If auth loading, show nothing or spinner (handled by auth context logic mostly, but good to safeguard)
+  // Auth Check
   if (isAuthLoading) {
     return (
-      <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex items-center justify-center">
-        <div className="w-8 h-8 border-4 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin"></div>
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+        <div className="relative w-16 h-16">
+          <div className="absolute inset-0 border-4 border-indigo-500/30 rounded-full"></div>
+          <div className="absolute inset-0 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+        </div>
       </div>
     );
   }
 
-  // If not authenticated, show Auth Screen
   if (!user) {
-    return <AuthScreen t={t} theme={theme} toggleTheme={toggleTheme} />;
+    return <AuthScreen t={t} theme={theme} toggleTheme={toggleTheme} currentLang={currentLang} setLang={setCurrentLang} />;
   }
 
-  // Convert file to Base64
+  // Handlers
   const processFile = (file: File) => {
     const reader = new FileReader();
     reader.onloadend = () => {
       const base64 = reader.result as string;
-      setUpload({
-        file,
-        previewUrl: base64,
-        base64: base64,
-        mimeType: file.type,
-      });
-      // Reset previous results when new file is uploaded, unless in video mode where we keep image
-      if (inputMode !== 'video' && inputMode !== 'chat' && inputMode !== 'live') {
-          setGeneratedViews([]);
-          setSelectedIds([]);
-          setIsSelectionMode(false);
-          setAnalysisResult('');
+      setUpload({ file, previewUrl: base64, base64: base64, mimeType: file.type });
+      
+      // When uploading in specific modes, don't clear everything immediately
+      if (inputMode === 'upload') {
+        setGeneratedViews([]);
+        setSelectedIds([]);
+        setIsSelectionMode(false);
       }
     };
     reader.readAsDataURL(file);
   };
 
-  const handleToggleSelectionMode = () => {
-    setIsSelectionMode(prev => {
-      const next = !prev;
-      if (!next) setSelectedIds([]); // Clear selection when exiting mode
-      return next;
-    });
-  };
-
-  const handleSelectionToggle = (id: string) => {
-    setSelectedIds(prev => 
-      prev.includes(id) 
-        ? prev.filter(existingId => existingId !== id)
-        : [...prev, id]
-    );
-  };
-
-  const handleSelectAll = () => {
-    setSelectedIds(generatedViews.map(v => v.id));
-  };
-
-  const handleDeselectAll = () => {
-    setSelectedIds([]);
-  };
-
-  const handleFilterSelect = (filterId: ImageFilter) => {
-    if (isSelectionMode && selectedIds.length === 0) {
-       return;
-    }
-
-    const option = FILTER_OPTIONS.find(f => f.id === filterId);
-    const newIntensity = option && option.defaultValue !== undefined ? option.defaultValue : 100;
-
-    setGeneratedViews(prev => prev.map(view => {
-      const shouldUpdate = !isSelectionMode || selectedIds.includes(view.id);
-      return shouldUpdate 
-        ? { ...view, filter: filterId, filterIntensity: newIntensity }
-        : view;
-    }));
+  const setInputModeAndClear = (mode: InputMode) => {
+      if (inputMode === 'live' && mode !== 'live') {
+          stopLiveSession();
+          setLiveStatus('idle');
+      }
+      setInputMode(mode);
+      setAnalysisResult('');
+      setGeneratedVideoUrl(null);
+      
+      // Reset view specific data if switching major contexts
+      if (mode === 'upload' || mode === 'prompt') {
+         setGeneratedViews([]); 
+      }
   };
 
   const handleGenerateReference = async () => {
@@ -192,180 +183,26 @@ const App: React.FC = () => {
     setIsGeneratingRef(true);
     setUpload(null);
     setGeneratedViews([]);
-    setAnalysisResult('');
-    
     try {
       const result = await generateReferenceImage(prompt, aspectRatio);
-      // Create a mock File object (optional, but good for type consistency if needed elsewhere)
       const file = new File([new Blob([result.url])], "generated-ref.png", { type: result.mimeType });
-      
-      setUpload({
-        file, // Mock file
-        previewUrl: result.url,
-        base64: result.url,
-        mimeType: result.mimeType
-      });
+      setUpload({ file, previewUrl: result.url, base64: result.url, mimeType: result.mimeType });
     } catch (error) {
-      console.error("Failed to generate reference:", error);
-      alert("Failed to generate reference image. Please try again.");
+      console.error(error);
     } finally {
       setIsGeneratingRef(false);
     }
   };
 
-  const handleAnalyze = async () => {
-    if (!upload) return;
-    setIsAnalyzing(true);
-    setAnalysisResult('');
-    
-    try {
-      // Default prompt if empty
-      const finalPrompt = analysisPrompt.trim() || "Describe this image in detail.";
-      const result = await analyzeImage(upload.base64, upload.mimeType, finalPrompt);
-      setAnalysisResult(result);
-    } catch (error) {
-      console.error("Failed to analyze:", error);
-      setAnalysisResult("Failed to analyze image. Please try again.");
-    } finally {
-      setIsAnalyzing(false);
-    }
-  };
-
-  const handleEdit = async () => {
-      if (!upload) return;
-      setIsEditing(true);
-      setSelectedIds([]);
-      setIsSelectionMode(false);
-      // Prepare placeholder view
-      setGeneratedViews([{
-          id: 'edit',
-          angleName: 'edit', // key for translation
-          imageUrl: null,
-          isLoading: true,
-          error: null,
-          filter: 'none',
-          filterIntensity: 100
-      }]);
-
-      try {
-          const promptText = editPrompt.trim() || "Enhance this image.";
-          const imageUrl = await editImage(upload.base64, upload.mimeType, promptText);
-          setGeneratedViews([{
-              id: 'edit',
-              angleName: 'edit',
-              imageUrl,
-              isLoading: false,
-              error: null,
-              filter: 'none',
-              filterIntensity: 100
-          }]);
-      } catch (e) {
-          console.error("Edit failed", e);
-          setGeneratedViews([{
-              id: 'edit',
-              angleName: 'edit',
-              imageUrl: null,
-              isLoading: false,
-              error: "Failed to edit image",
-              filter: 'none',
-              filterIntensity: 100
-          }]);
-      } finally {
-          setIsEditing(false);
-      }
-  }
-
-  const handleGenerateVideo = async () => {
-      if (!videoPrompt.trim() && !upload) return;
-      setIsGeneratingVideo(true);
-      setGeneratedVideoUrl(null);
-
-      try {
-          // Ensure Veo supported aspects
-          const veoAspect = (aspectRatio === '16:9' || aspectRatio === '9:16') ? aspectRatio : '16:9';
-          
-          const url = await generateVideo(
-              videoPrompt, 
-              veoAspect, 
-              upload?.base64, 
-              upload?.mimeType
-          );
-          setGeneratedVideoUrl(url);
-      } catch (error: any) {
-          console.error("Video generation failed", error);
-          alert(error.message || "Failed to generate video");
-      } finally {
-          setIsGeneratingVideo(false);
-      }
-  };
-
-  const handleSendMessage = async (e?: React.FormEvent) => {
-      if (e) e.preventDefault();
-      if (!chatInput.trim()) return;
-
-      const userMsg: ChatMessage = {
-          id: Date.now().toString(),
-          role: 'user',
-          text: chatInput,
-          timestamp: Date.now()
-      };
-
-      setChatMessages(prev => [...prev, userMsg]);
-      setChatInput('');
-      setIsChatLoading(true);
-
-      try {
-          const responseText = await sendChatMessage(userMsg.text);
-          const botMsg: ChatMessage = {
-              id: (Date.now() + 1).toString(),
-              role: 'model',
-              text: responseText,
-              timestamp: Date.now()
-          };
-          setChatMessages(prev => [...prev, botMsg]);
-      } catch (error) {
-          console.error("Chat failed", error);
-          const errorMsg: ChatMessage = {
-              id: (Date.now() + 1).toString(),
-              role: 'model',
-              text: "Sorry, I encountered an error. Please try again.",
-              timestamp: Date.now()
-          };
-          setChatMessages(prev => [...prev, errorMsg]);
-      } finally {
-          setIsChatLoading(false);
-      }
-  };
-
-  const handleClearChat = () => {
-      setChatMessages([]);
-      resetChatSession();
-  };
-
-  const toggleLiveSession = () => {
-      if (liveStatus === 'connected' || liveStatus === 'connecting') {
-          stopLiveSession();
-          setLiveStatus('idle');
-      } else {
-          setLiveStatus('connecting');
-          startLiveSession((status) => {
-              setLiveStatus(status as LiveStatus);
-          });
-      }
-  };
-
-  // Trigger generation for all angles
   const handleGenerate = async () => {
     if (!upload) return;
-
     setIsProcessing(true);
-    setSelectedIds([]); // Clear selection on new generation
-    setIsSelectionMode(false); // Reset mode
+    setSelectedIds([]);
+    setIsSelectionMode(false);
 
-    // Initialize grid with loading states
     const initialStates: GeneratedView[] = TARGET_ANGLES.map(angle => ({
       id: angle.id,
-      angleName: angle.name, // Note: This name is now just a fallback, UI uses translation
+      angleName: angle.name,
       imageUrl: null,
       isLoading: true,
       error: null,
@@ -374,117 +211,94 @@ const App: React.FC = () => {
     }));
     setGeneratedViews(initialStates);
 
-    const promises = TARGET_ANGLES.map(async (angle) => {
+    await Promise.all(TARGET_ANGLES.map(async (angle) => {
       try {
-        const imageUrl = await generateAngleImage(
-          upload.base64, 
-          upload.mimeType, 
-          angle.name,
-          aspectRatio,
-          quality
-        );
-        
-        setGeneratedViews(prev => prev.map(view => 
-          view.id === angle.id 
-            ? { ...view, imageUrl, isLoading: false } 
-            : view
-        ));
+        const imageUrl = await generateAngleImage(upload.base64, upload.mimeType, angle.name, aspectRatio, quality);
+        setGeneratedViews(prev => prev.map(view => view.id === angle.id ? { ...view, imageUrl, isLoading: false } : view));
       } catch (error) {
-        setGeneratedViews(prev => prev.map(view => 
-          view.id === angle.id 
-            ? { ...view, error: "Failed to generate", isLoading: false } 
-            : view
-        ));
+        setGeneratedViews(prev => prev.map(view => view.id === angle.id ? { ...view, error: "Failed", isLoading: false } : view));
       }
-    });
-
-    await Promise.all(promises);
+    }));
     setIsProcessing(false);
   };
 
-  const handleRotate = async (targetId: string, direction: 'clockwise' | 'counterclockwise') => {
-    const targets = (selectedIds.includes(targetId) && selectedIds.length > 0) 
-      ? selectedIds 
-      : [targetId];
-
-    setGeneratedViews(prev => prev.map(v => targets.includes(v.id) ? { ...v, isLoading: true } : v));
-
-    const updates = await Promise.all(targets.map(async (id) => {
-      const view = generatedViews.find(v => v.id === id);
-      if (!view || !view.imageUrl) return { id, success: false };
-      
-      try {
-        const newUrl = await rotateImage(view.imageUrl, direction);
-        return { id, success: true, newUrl };
-      } catch (e) {
-        console.error(`Failed to rotate ${id}`, e);
-        return { id, success: false };
-      }
-    }));
-
-    setGeneratedViews(prev => prev.map(v => {
-      const update = updates.find(u => u.id === v.id);
-      if (update) {
-        return { 
-          ...v, 
-          isLoading: false, 
-          imageUrl: update.success && update.newUrl ? update.newUrl : v.imageUrl 
-        };
-      }
-      return v;
-    }));
+  const handleAnalyze = async () => {
+     if(!upload) return; setIsAnalyzing(true);
+     try { const res = await analyzeImage(upload.base64, upload.mimeType, analysisPrompt || "Describe this"); setAnalysisResult(res); } 
+     catch(e) { setAnalysisResult("Error"); } finally { setIsAnalyzing(false); }
   };
-  
-  const handleUpdateView = (id: string, updates: Partial<GeneratedView>) => {
-    setGeneratedViews(prev => prev.map(view => 
-      view.id === id ? { ...view, ...updates } : view
-    ));
+
+  const handleEdit = async () => {
+      if(!upload) return; setIsEditing(true); setGeneratedViews([]);
+      try { const url = await editImage(upload.base64, upload.mimeType, editPrompt || "Enhance"); 
+      setGeneratedViews([{ id: 'edit', angleName: 'edit', imageUrl: url, isLoading: false, error: null, filter: 'none', filterIntensity: 100 }]); } 
+      catch(e) { console.error(e); } finally { setIsEditing(false); }
+  };
+
+  const handleGenerateVideo = async () => {
+      if(!videoPrompt.trim() && !upload) return; 
+      setIsGeneratingVideo(true); 
+      setGeneratedVideoUrl(null);
+      try { 
+        const url = await generateVideo(videoPrompt, aspectRatio, upload?.base64, upload?.mimeType); 
+        setGeneratedVideoUrl(url); 
+      } catch(e: any) { 
+        console.error(e);
+        alert(e.message || "Video generation failed"); 
+      } finally { 
+        setIsGeneratingVideo(false); 
+      }
+  };
+
+  const handleSendMessage = async (e: React.FormEvent) => {
+      e.preventDefault(); if(!chatInput.trim()) return;
+      const userMsg: ChatMessage = { id: Date.now().toString(), role: 'user', text: chatInput, timestamp: Date.now() };
+      setChatMessages(p => [...p, userMsg]); setChatInput(''); setIsChatLoading(true);
+      try { const res = await sendChatMessage(userMsg.text); 
+      setChatMessages(p => [...p, { id: (Date.now()+1).toString(), role: 'model', text: res, timestamp: Date.now() }]); } 
+      catch(e) { console.error(e); } finally { setIsChatLoading(false); }
+  };
+
+  const handleRotate = async (targetId: string, dir: 'clockwise' | 'counterclockwise') => {
+      const targets = selectedIds.includes(targetId) && selectedIds.length > 0 ? selectedIds : [targetId];
+      setGeneratedViews(p => p.map(v => targets.includes(v.id) ? {...v, isLoading: true} : v));
+      const updates = await Promise.all(targets.map(async id => {
+          const v = generatedViews.find(i => i.id === id);
+          if(!v?.imageUrl) return {id, url: null};
+          return { id, url: await rotateImage(v.imageUrl, dir) };
+      }));
+      setGeneratedViews(p => p.map(v => { const u = updates.find(up => up.id === v.id); return u?.url ? {...v, isLoading: false, imageUrl: u.url} : v; }));
   };
 
   const handleUpscale = async (id: string) => {
-    const view = generatedViews.find(v => v.id === id);
-    if (!view || !view.imageUrl) return;
-
-    setGeneratedViews(prev => prev.map(v => v.id === id ? { ...v, isUpscaling: true } : v));
-
-    try {
-      const match = view.imageUrl.match(/^data:(.+);base64,(.+)$/);
-      const mimeType = match ? match[1] : 'image/png';
-      
-      const upscaledUrl = await upscaleImage(view.imageUrl, mimeType);
-      
-      setGeneratedViews(prev => prev.map(v => 
-        v.id === id ? { ...v, imageUrl: upscaledUrl, isUpscaling: false } : v
-      ));
-    } catch (error) {
-      console.error("Upscale failed", error);
-      setGeneratedViews(prev => prev.map(v => v.id === id ? { ...v, isUpscaling: false } : v));
-    }
+      const v = generatedViews.find(i => i.id === id); if(!v?.imageUrl) return;
+      setGeneratedViews(p => p.map(x => x.id === id ? {...x, isUpscaling: true} : x));
+      try { const url = await upscaleImage(v.imageUrl, 'image/png'); 
+      setGeneratedViews(p => p.map(x => x.id === id ? {...x, isUpscaling: false, imageUrl: url} : x)); } 
+      catch(e) { setGeneratedViews(p => p.map(x => x.id === id ? {...x, isUpscaling: false} : x)); }
   };
 
-  const handleBatchUpscale = async () => {
-    const targets = selectedIds.filter(id => {
-      const view = generatedViews.find(v => v.id === id);
-      return view && view.imageUrl && !view.isUpscaling && !view.isLoading;
-    });
-    
-    if (targets.length === 0) return;
+  const toggleLiveSession = () => {
+      if (liveStatus === 'connected' || liveStatus === 'connecting') { stopLiveSession(); setLiveStatus('idle'); }
+      else { setLiveStatus('connecting'); startLiveSession((s) => setLiveStatus(s as LiveStatus)); }
+  };
 
-    targets.forEach(id => handleUpscale(id));
+  const handleFilterSelect = (fid: ImageFilter) => {
+      if(isSelectionMode && selectedIds.length === 0) return;
+      const opt = FILTER_OPTIONS.find(f => f.id === fid);
+      setGeneratedViews(p => p.map(v => (!isSelectionMode || selectedIds.includes(v.id)) ? {...v, filter: fid, filterIntensity: opt?.defaultValue || 100} : v));
   };
 
   const handleDownloadAll = async () => {
     const targets = selectedIds.length > 0 
        ? generatedViews.filter(v => selectedIds.includes(v.id) && v.imageUrl)
        : generatedViews.filter(v => v.imageUrl);
-
     if (targets.length === 0) return;
-
     for (const view of targets) {
       if (view.imageUrl) {
         const link = document.createElement('a');
         link.href = view.imageUrl;
-        link.download = `30daynanobanana-${view.id}.png`;
+        link.download = `nanobanana-${view.id}.png`;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
@@ -493,823 +307,340 @@ const App: React.FC = () => {
     }
   };
 
-  const hasResults = generatedViews.length > 0;
-  
-  const getEffectiveActiveFilter = () => {
-     if (generatedViews.length === 0) return 'none';
-     const targets = selectedIds.length > 0 
-        ? generatedViews.filter(v => selectedIds.includes(v.id))
-        : generatedViews;
-     
-     const firstFilter = targets[0]?.filter;
-     const allSame = targets.every(t => t.filter === firstFilter);
-     return allSame ? firstFilter : 'none';
-  };
-
-  const activeFilterDisplay = getEffectiveActiveFilter();
-
-  const setInputModeAndClear = (mode: InputMode) => {
-      // Cleanup live session if leaving live mode
-      if (inputMode === 'live' && mode !== 'live') {
-          stopLiveSession();
-          setLiveStatus('idle');
-      }
-
-      setInputMode(mode);
-      setGeneratedViews([]);
-      setSelectedIds([]);
-      setIsSelectionMode(false);
-      setAnalysisResult('');
-      setGeneratedVideoUrl(null);
-      if (mode === 'video') {
-         setAspectRatio('16:9');
-      }
-  };
-
   return (
-    <div className="min-h-screen flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-200 relative overflow-x-hidden transition-colors duration-300">
-      
-      {/* Background Gradients */}
-      <div className="fixed inset-0 z-0 pointer-events-none">
-        <div className="absolute -top-24 left-1/2 -translate-x-1/2 w-[1000px] h-[500px] bg-indigo-600/5 dark:bg-indigo-600/10 rounded-[100%] blur-[120px] mix-blend-normal dark:mix-blend-screen" />
-        <div className="absolute -bottom-24 -right-24 w-[600px] h-[600px] bg-purple-600/5 dark:bg-purple-600/10 rounded-full blur-[120px] mix-blend-normal dark:mix-blend-screen" />
-        <div className="absolute top-1/3 -left-24 w-[400px] h-[400px] bg-blue-600/5 dark:bg-blue-600/5 rounded-full blur-[100px]" />
+    <div className="flex h-screen overflow-hidden bg-slate-50 dark:bg-[#050505] text-slate-900 dark:text-slate-200 transition-colors duration-500 font-sans">
+      {/* Animated Background Elements */}
+      <div className="absolute inset-0 pointer-events-none overflow-hidden">
+         <div className="absolute top-[-20%] left-[-10%] w-[60vw] h-[60vw] bg-indigo-500/5 rounded-full blur-[150px] animate-float"></div>
+         <div className="absolute bottom-[-20%] right-[-10%] w-[60vw] h-[60vw] bg-purple-500/5 rounded-full blur-[150px] animate-float" style={{animationDelay: '5s'}}></div>
       </div>
 
-      {/* Header */}
-      <header className="w-full py-4 md:py-6 border-b border-slate-200 dark:border-slate-800/50 bg-white/70 dark:bg-slate-900/20 backdrop-blur-md sticky top-0 z-50 transition-colors duration-300">
-        <div className="max-w-6xl mx-auto px-4 md:px-6 flex flex-col sm:flex-row items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-500/20">
-              <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.384-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"></path>
-              </svg>
-            </div>
-            <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-slate-900 to-slate-600 dark:from-white dark:to-slate-400">
-              {t('app.title')}
-            </h1>
-          </div>
-          
-          <div className="flex items-center gap-4">
-             <div className="flex items-center gap-3 mr-2 pr-4 border-r border-slate-200 dark:border-slate-800">
-                <div className="flex items-center gap-2">
-                   <img 
-                     src={user.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.name)}&background=6366f1&color=fff`} 
-                     alt={user.name}
-                     className="w-8 h-8 rounded-full border border-indigo-500/30"
-                   />
-                   <div className="hidden md:flex flex-col">
-                      <span className="text-xs font-bold text-slate-900 dark:text-white leading-none">{user.name}</span>
-                      <span className="text-[10px] text-slate-500 leading-none mt-1 uppercase">{user.provider}</span>
-                   </div>
-                </div>
+      {/* Sidebar Navigation */}
+      <Sidebar 
+        currentMode={inputMode} 
+        setMode={setInputModeAndClear} 
+        t={t}
+        isProcessing={isProcessing || isGeneratingRef || isAnalyzing || isEditing || isGeneratingVideo}
+      />
+
+      {/* Main Content Area */}
+      <main className="flex-1 flex flex-col h-full relative overflow-hidden z-10">
+        
+        {/* Header */}
+        <header className="h-20 px-8 flex items-center justify-between bg-white/60 dark:bg-slate-900/60 backdrop-blur-xl border-b border-slate-200 dark:border-slate-800/50 z-20 shrink-0 transition-all duration-300">
+           <div>
+             <h2 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white capitalize flex items-center gap-2">
+               {t(`mode.${inputMode}`)}
+               {isProcessing && <span className="flex h-2 w-2 rounded-full bg-indigo-500 animate-ping"/>}
+             </h2>
+             <p className="text-xs text-slate-500 dark:text-slate-400 font-medium hidden md:block">AI Powered Creative Studio</p>
+           </div>
+           
+           <div className="flex items-center gap-5">
+             {/* Language Selector */}
+             <div className="relative" ref={langMenuRef}>
                 <button 
-                  onClick={logout}
-                  className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-colors"
-                  title={t('auth.logout')}
+                  onClick={() => setIsLangOpen(!isLangOpen)}
+                  className="flex items-center gap-2 px-3 py-2 rounded-full bg-white/50 dark:bg-slate-800/50 hover:bg-white dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-700 transition-all"
                 >
-                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
+                   <span className="text-xl leading-none">{languages.find(l => l.id === currentLang)?.flag}</span>
+                   <span className="text-sm font-bold text-slate-700 dark:text-slate-300 uppercase hidden sm:block">{currentLang}</span>
+                   <svg className={`w-3 h-3 text-slate-500 transition-transform ${isLangOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" /></svg>
                 </button>
+
+                {isLangOpen && (
+                  <div className="absolute top-full right-0 mt-2 w-48 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-2xl shadow-xl overflow-hidden z-50 animate-in fade-in zoom-in-95 duration-200">
+                    <div className="p-1.5">
+                      {languages.map((lang) => (
+                        <button
+                          key={lang.id}
+                          onClick={() => { setCurrentLang(lang.id); setIsLangOpen(false); }}
+                          className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold transition-colors ${currentLang === lang.id ? 'bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
+                        >
+                          <span className="text-lg">{lang.flag}</span>
+                          <span>{lang.label}</span>
+                          {currentLang === lang.id && <svg className="w-4 h-4 ml-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7" /></svg>}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
              </div>
 
-            {/* Theme Toggle */}
-            <button
-              onClick={toggleTheme}
-              className="p-2 text-slate-500 hover:text-indigo-600 dark:text-slate-400 dark:hover:text-indigo-400 bg-slate-100 dark:bg-slate-800 rounded-lg transition-colors"
-              title="Toggle Theme"
-            >
+             {/* Profile */}
+             <div className="flex items-center gap-4 pl-6 border-l border-slate-200 dark:border-slate-800/50">
+                <div className="text-right hidden md:block">
+                  <p className="text-sm font-bold text-slate-900 dark:text-white leading-none">{user.name}</p>
+                  <button onClick={logout} className="text-[10px] font-semibold text-red-500 hover:text-red-600 uppercase tracking-wider mt-1">{t('auth.logout')}</button>
+                </div>
+                <img src={user.avatar} alt="Avatar" className="w-10 h-10 rounded-full border-2 border-white dark:border-slate-700 shadow-md object-cover" />
+             </div>
+             
+             {/* Theme Toggle */}
+             <button onClick={toggleTheme} className="p-2.5 text-slate-500 dark:text-slate-400 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-full transition-all shadow-sm border border-slate-200 dark:border-slate-700">
                {theme === 'dark' ? (
                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" /></svg>
                ) : (
                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" /></svg>
                )}
-            </button>
+             </button>
+           </div>
+        </header>
 
-            <div className="relative min-w-[120px]">
-               <select 
-                 value={currentLang} 
-                 onChange={(e) => setCurrentLang(e.target.value as Language)}
-                 className="appearance-none bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-300 text-sm rounded-lg focus:ring-indigo-500 focus:border-indigo-500 block w-full pl-3 pr-8 py-1.5 cursor-pointer hover:border-slate-300 dark:hover:border-slate-600 transition-colors"
-               >
-                 {languages.map(l => (
-                   <option key={l.id} value={l.id}>{l.flag} {l.label}</option>
-                 ))}
-               </select>
-               <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-slate-500">
-                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" /></svg>
+        {/* Scrollable Content */}
+        <div className="flex-1 overflow-y-auto p-4 md:p-8 scrollbar-thin bg-gradient-to-b from-transparent to-white/5 dark:to-black/20">
+          <div className="max-w-[1600px] mx-auto space-y-8">
+            
+            {/* Conditional Inputs based on Mode */}
+            <div className="grid grid-cols-1 xl:grid-cols-12 gap-8">
+               
+               {/* Left Column: Input/Config */}
+               <div className={`xl:col-span-4 space-y-6 ${inputMode === 'chat' || inputMode === 'live' ? 'hidden' : ''}`}>
+                  
+                  {/* Mode: Upload, Analyze, Edit, Video (Requires Upload) */}
+                  {(inputMode === 'upload' || inputMode === 'analyze' || inputMode === 'edit' || inputMode === 'video') && (
+                    <div className="glass-panel rounded-[2rem] p-2 transition-all duration-300 hover:shadow-lg">
+                       <UploadZone 
+                          onFileSelect={processFile} 
+                          currentPreview={upload?.previewUrl || null} 
+                          isGenerating={isProcessing} 
+                          t={t} 
+                       />
+                       {inputMode === 'video' && upload && (
+                         <button onClick={() => setUpload(null)} className="w-full py-3 text-xs font-bold text-red-400 hover:text-red-500 hover:bg-red-500/10 rounded-xl transition-colors mt-2 uppercase tracking-wider">Remove Image</button>
+                       )}
+                    </div>
+                  )}
+
+                  {/* Mode: Prompt */}
+                  {inputMode === 'prompt' && (
+                    <div className="glass-panel rounded-[2rem] p-8 space-y-6">
+                      <div>
+                          <label className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3 block">{t('prompt.placeholder')}</label>
+                          <textarea 
+                            value={prompt} onChange={e => setPrompt(e.target.value)} 
+                            className="w-full h-48 bg-slate-50 dark:bg-black/20 border border-slate-200 dark:border-slate-700/50 rounded-2xl p-5 text-sm focus:ring-2 focus:ring-indigo-500/50 outline-none resize-none transition-all focus:bg-white dark:focus:bg-black/40"
+                            placeholder="E.g. A futuristic robot playing chess..."
+                          />
+                      </div>
+                      <button 
+                        onClick={handleGenerateReference}
+                        disabled={isGeneratingRef || !prompt.trim()}
+                        className="w-full py-4 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-xl shadow-lg shadow-indigo-500/30 transition-all disabled:opacity-50 transform active:scale-[0.98]"
+                      >
+                        {isGeneratingRef ? t('prompt.generating') : t('prompt.btn')}
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Controls: Aspect & Quality (Only for Upload/Prompt) */}
+                  {(inputMode === 'upload' || inputMode === 'prompt') && (
+                     <div className="glass-panel rounded-[2rem] p-8 space-y-8">
+                        <div>
+                           <label className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4 block">{t('label.aspect_ratio')}</label>
+                           <div className="grid grid-cols-2 gap-3">
+                              {ASPECT_RATIOS.map(r => (
+                                 <button key={r.id} onClick={() => setAspectRatio(r.id)} className={`py-3 rounded-xl text-xs font-bold transition-all border-2 ${aspectRatio === r.id ? 'bg-indigo-600 border-indigo-600 text-white shadow-md' : 'border-transparent bg-slate-100 dark:bg-slate-800/50 text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-800'}`}>{t(`ratio.${r.id}`)}</button>
+                              ))}
+                           </div>
+                        </div>
+                        <div>
+                           <label className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4 block">{t('label.quality')}</label>
+                           <div className="grid grid-cols-3 gap-3">
+                              {QUALITY_OPTIONS.map(q => (
+                                 <button key={q.id} onClick={() => setQuality(q.id)} className={`py-3 rounded-xl text-xs font-bold transition-all border-2 ${quality === q.id ? 'bg-indigo-600 border-indigo-600 text-white shadow-md' : 'border-transparent bg-slate-100 dark:bg-slate-800/50 text-slate-500 hover:bg-slate-200 dark:hover:bg-slate-800'}`}>{t(`quality.${q.id}`)}</button>
+                              ))}
+                           </div>
+                        </div>
+                        
+                        <button 
+                          onClick={handleGenerate}
+                          disabled={!upload || isProcessing}
+                          className="w-full py-5 bg-gradient-to-r from-indigo-600 to-blue-600 text-white font-bold rounded-2xl shadow-xl hover:shadow-blue-500/30 transition-all transform hover:-translate-y-1 active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
+                        >
+                           {isProcessing ? (
+                               <span className="flex items-center justify-center gap-3">
+                                   <svg className="w-5 h-5 animate-spin" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                                   {t('btn.generating')}
+                               </span>
+                           ) : t('btn.generate')}
+                        </button>
+                     </div>
+                  )}
+
+                  {/* Input: Analyze */}
+                  {inputMode === 'analyze' && (
+                     <div className="glass-panel rounded-[2rem] p-8 space-y-6">
+                        <textarea value={analysisPrompt} onChange={e => setAnalysisPrompt(e.target.value)} placeholder={t('analyze.placeholder')} className="w-full h-40 bg-slate-50 dark:bg-black/20 border-slate-200 dark:border-slate-700/50 rounded-2xl p-4 text-sm focus:ring-2 focus:ring-purple-500/50 outline-none resize-none" />
+                        <button onClick={handleAnalyze} disabled={isAnalyzing || !upload} className="w-full py-4 bg-purple-600 hover:bg-purple-500 text-white rounded-xl font-bold shadow-lg shadow-purple-500/20 transition-all disabled:opacity-50">{isAnalyzing ? t('analyze.loading') : t('analyze.btn')}</button>
+                     </div>
+                  )}
+
+                   {/* Input: Edit */}
+                   {inputMode === 'edit' && (
+                     <div className="glass-panel rounded-[2rem] p-8 space-y-6">
+                        <textarea value={editPrompt} onChange={e => setEditPrompt(e.target.value)} placeholder={t('edit.placeholder')} className="w-full h-40 bg-slate-50 dark:bg-black/20 border-slate-200 dark:border-slate-700/50 rounded-2xl p-4 text-sm focus:ring-2 focus:ring-pink-500/50 outline-none resize-none" />
+                        <button onClick={handleEdit} disabled={isEditing || !upload} className="w-full py-4 bg-pink-600 hover:bg-pink-500 text-white rounded-xl font-bold shadow-lg shadow-pink-500/20 transition-all disabled:opacity-50">{isEditing ? t('edit.loading') : t('edit.btn')}</button>
+                     </div>
+                  )}
+
+                   {/* Input: Video */}
+                   {inputMode === 'video' && (
+                     <div className="glass-panel rounded-[2rem] p-8 space-y-6">
+                        <textarea value={videoPrompt} onChange={e => setVideoPrompt(e.target.value)} placeholder={t('video.placeholder')} className="w-full h-40 bg-slate-50 dark:bg-black/20 border-slate-200 dark:border-slate-700/50 rounded-2xl p-4 text-sm focus:ring-2 focus:ring-red-500/50 outline-none resize-none" />
+                        <div className="flex gap-3">
+                           {['16:9', '9:16'].map(r => (
+                              <button key={r} onClick={() => setAspectRatio(r as AspectRatio)} className={`flex-1 py-3 rounded-xl text-xs font-bold border-2 transition-all ${aspectRatio === r ? 'bg-red-600 border-red-600 text-white shadow-md' : 'border-transparent bg-slate-100 dark:bg-slate-800/50 text-slate-500'}`}>{r}</button>
+                           ))}
+                        </div>
+                        <button onClick={handleGenerateVideo} disabled={isGeneratingVideo || (!upload && !videoPrompt)} className="w-full py-4 bg-red-600 hover:bg-red-500 text-white rounded-xl font-bold shadow-lg shadow-red-500/20 transition-all disabled:opacity-50">{isGeneratingVideo ? t('video.loading') : t('video.btn')}</button>
+                     </div>
+                  )}
+
+               </div>
+
+               {/* Right Column: Results / Chat / Live */}
+               <div className={`xl:col-span-8 ${inputMode === 'chat' || inputMode === 'live' ? 'xl:col-span-12' : ''}`}>
+                  
+                  {/* Empty State */}
+                  {generatedViews.length === 0 && !analysisResult && !generatedVideoUrl && inputMode !== 'chat' && inputMode !== 'live' && (
+                     <div className="h-full flex flex-col items-center justify-center opacity-40 min-h-[400px]">
+                        <div className="w-32 h-32 bg-slate-200 dark:bg-slate-800 rounded-full flex items-center justify-center mb-6">
+                            <svg className="w-16 h-16 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                        </div>
+                        <p className="text-xl font-medium text-slate-500 dark:text-slate-400">Ready to create something amazing?</p>
+                        <p className="text-sm text-slate-400 dark:text-slate-600 mt-2">Upload an image or enter a prompt to start.</p>
+                     </div>
+                  )}
+
+                  {/* Generated Grid */}
+                  {generatedViews.length > 0 && (
+                     <div className="space-y-8 animate-fade-in">
+                        <div className="flex flex-col md:flex-row justify-between items-end md:items-center gap-4">
+                           <h3 className="text-xl font-bold text-slate-800 dark:text-white flex items-center gap-3">
+                               <span className="w-2 h-8 bg-indigo-500 rounded-full"></span>
+                               {t('lightbox.output')}
+                           </h3>
+                           <div className="flex gap-3 bg-white/50 dark:bg-slate-900/50 p-1.5 rounded-2xl backdrop-blur-sm border border-white/20">
+                              {/* Filters */}
+                              <div className="hidden xl:flex gap-1 mr-2">
+                                 {FILTER_OPTIONS.map(f => (
+                                    <button key={f.id} onClick={() => handleFilterSelect(f.id)} className={`px-4 py-2 text-xs rounded-xl transition-all ${generatedViews[0]?.filter === f.id ? 'bg-indigo-600 text-white font-bold shadow-md' : 'text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-800'}`}>{t(`filter.${f.id}`)}</button>
+                                 ))}
+                              </div>
+                              
+                              <button onClick={() => setIsSelectionMode(!isSelectionMode)} className={`px-5 py-2 rounded-xl text-xs font-bold uppercase tracking-wider transition-all ${isSelectionMode ? 'bg-indigo-600 text-white shadow-md' : 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400'}`}>
+                                 {isSelectionMode ? t('btn.exit_select') : t('btn.select_mode')}
+                              </button>
+                              <button onClick={handleDownloadAll} className="px-5 py-2 bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl text-xs font-bold uppercase tracking-wider transition-all">
+                                 {t('btn.save_all')}
+                              </button>
+                           </div>
+                        </div>
+                        <GeneratedGrid 
+                           items={generatedViews} selectedIds={selectedIds} isSelectionMode={isSelectionMode}
+                           onToggleSelection={id => setSelectedIds(p => p.includes(id) ? p.filter(x => x!==id) : [...p, id])}
+                           onSelectAll={() => setSelectedIds(generatedViews.map(v => v.id))} onDeselectAll={() => setSelectedIds([])}
+                           onRotate={handleRotate} onUpdateView={(id, u) => setGeneratedViews(p => p.map(v => v.id === id ? {...v, ...u} : v))}
+                           onUpscale={handleUpscale} onBatchUpscale={() => selectedIds.forEach(id => handleUpscale(id))}
+                           originalImage={upload?.previewUrl || null} t={t}
+                        />
+                     </div>
+                  )}
+
+                  {/* Analyze Result */}
+                  {analysisResult && (
+                     <div className="glass-panel rounded-[2rem] p-10 animate-in fade-in slide-in-from-bottom-8 border-l-4 border-l-purple-500">
+                        <h3 className="text-2xl font-bold text-purple-500 mb-6 flex items-center gap-3">
+                            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" /></svg>
+                            {t('analyze.result')}
+                        </h3>
+                        <p className="text-slate-600 dark:text-slate-300 whitespace-pre-wrap leading-relaxed text-lg">{analysisResult}</p>
+                     </div>
+                  )}
+
+                  {/* Video Result */}
+                  {generatedVideoUrl && (
+                     <div className="flex flex-col items-center animate-in fade-in slide-in-from-bottom-8 p-8">
+                        <div className="rounded-3xl overflow-hidden shadow-2xl border-4 border-slate-900 dark:border-slate-700 bg-black w-full max-w-4xl relative group">
+                           <video src={generatedVideoUrl} controls autoPlay loop className="w-full h-auto" />
+                        </div>
+                        <a href={generatedVideoUrl} download="video.mp4" className="mt-8 px-10 py-4 bg-red-600 hover:bg-red-500 text-white rounded-full font-bold text-lg shadow-lg shadow-red-500/40 transition-all transform hover:-translate-y-1">{t('video.download')}</a>
+                     </div>
+                  )}
+
+                  {/* Chat Interface */}
+                  {inputMode === 'chat' && (
+                     <div className="h-full max-h-[85vh] flex flex-col glass-panel rounded-[2.5rem] overflow-hidden shadow-2xl">
+                        <div className="flex-1 overflow-y-auto p-8 space-y-8" ref={chatContainerRef}>
+                           {chatMessages.length === 0 && (
+                              <div className="h-full flex items-center justify-center text-slate-400">
+                                 <div className="text-center">
+                                    <div className="w-24 h-24 bg-blue-500/10 rounded-full flex items-center justify-center mx-auto mb-6 animate-float">
+                                       <svg className="w-10 h-10 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" /></svg>
+                                    </div>
+                                    <p className="text-lg font-medium">{t('chat.welcome')}</p>
+                                 </div>
+                              </div>
+                           )}
+                           {chatMessages.map(msg => (
+                              <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                                 <div className={`max-w-[75%] p-5 rounded-3xl text-base leading-relaxed shadow-md ${msg.role === 'user' ? 'bg-blue-600 text-white rounded-br-sm' : 'bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 rounded-bl-sm'}`}>
+                                    {msg.text}
+                                 </div>
+                              </div>
+                           ))}
+                           {isChatLoading && (
+                              <div className="flex justify-start">
+                                 <div className="bg-white dark:bg-slate-800 p-5 rounded-3xl rounded-bl-sm shadow-sm flex gap-2">
+                                    <span className="w-2.5 h-2.5 bg-slate-400 rounded-full animate-bounce" />
+                                    <span className="w-2.5 h-2.5 bg-slate-400 rounded-full animate-bounce delay-100" />
+                                    <span className="w-2.5 h-2.5 bg-slate-400 rounded-full animate-bounce delay-200" />
+                                 </div>
+                              </div>
+                           )}
+                        </div>
+                        <form onSubmit={handleSendMessage} className="p-6 bg-white/80 dark:bg-slate-900/80 border-t border-slate-200 dark:border-slate-800 flex gap-4 backdrop-blur-md">
+                           <input value={chatInput} onChange={e => setChatInput(e.target.value)} placeholder={t('chat.placeholder')} className="flex-1 bg-slate-100 dark:bg-slate-800 rounded-2xl px-6 py-4 border-none focus:ring-2 focus:ring-blue-500/50 text-base outline-none" />
+                           <button type="submit" disabled={!chatInput.trim() || isChatLoading} className="p-4 bg-blue-600 text-white rounded-2xl hover:bg-blue-500 transition-colors shadow-lg shadow-blue-500/20 transform hover:-translate-y-0.5"><svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" /></svg></button>
+                        </form>
+                     </div>
+                  )}
+
+                  {/* Live Interface */}
+                  {inputMode === 'live' && (
+                     <div className="h-full flex flex-col items-center justify-center animate-in zoom-in-95 duration-500">
+                        <div className="relative group">
+                           {liveStatus === 'connected' && (
+                              <>
+                                 <div className="absolute inset-0 bg-green-500 rounded-full animate-ping opacity-20 blur-2xl scale-150"></div>
+                                 <div className="absolute inset-0 bg-green-400 rounded-full animate-pulse opacity-30 blur-xl scale-125"></div>
+                              </>
+                           )}
+                           <button 
+                              onClick={toggleLiveSession}
+                              disabled={liveStatus === 'connecting'}
+                              className={`relative z-10 w-48 h-48 rounded-full flex items-center justify-center shadow-2xl transition-all duration-500 border-8 border-white/10 backdrop-blur-md ${liveStatus === 'connected' ? 'bg-green-500 hover:bg-red-500 shadow-green-500/50' : liveStatus === 'connecting' ? 'bg-slate-700' : 'bg-gradient-to-br from-indigo-600 to-purple-600 hover:scale-105 shadow-indigo-500/50'}`}
+                           >
+                              {liveStatus === 'connecting' ? (
+                                 <svg className="w-16 h-16 text-white/50 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                              ) : (
+                                 <svg className="w-20 h-20 text-white drop-shadow-lg" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    {liveStatus === 'connected' ? <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0zM9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" /> : <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />}
+                                 </svg>
+                              )}
+                           </button>
+                        </div>
+                        <h3 className="mt-12 text-4xl font-bold text-slate-800 dark:text-white tracking-tight">{liveStatus === 'connected' ? t('live.status.connected') : liveStatus === 'connecting' ? t('live.status.connecting') : t('live.status.idle')}</h3>
+                        <p className="mt-4 text-lg text-slate-500 dark:text-slate-400">{t('live.subtitle')}</p>
+                     </div>
+                  )}
+
                </div>
             </div>
           </div>
         </div>
-      </header>
-
-      {/* Main Content */}
-      <main className="flex-grow flex flex-col items-center px-4 py-12 relative z-10">
-        
-        <div className="w-full max-w-2xl text-center mb-10">
-          <h2 className="text-3xl md:text-4xl font-bold mb-4 text-slate-900 dark:text-white drop-shadow-sm transition-colors">
-            {inputMode === 'analyze' ? t('mode.analyze') : inputMode === 'edit' ? t('mode.edit') : inputMode === 'video' ? t('mode.video') : inputMode === 'chat' ? t('mode.chat') : inputMode === 'live' ? t('mode.live') : t('btn.generate')}
-          </h2>
-          <p className="text-slate-600 dark:text-slate-400 text-lg transition-colors">
-            {inputMode === 'live' ? t('live.subtitle') : t('app.subtitle')}
-          </p>
-        </div>
-
-        {/* Mode Selection Tabs */}
-        <div className="w-full max-w-3xl mx-auto mb-6 bg-white dark:bg-slate-900/50 p-1 rounded-xl border border-slate-200 dark:border-slate-800 flex shadow-sm overflow-x-auto scrollbar-hide">
-          <button
-            onClick={() => setInputModeAndClear('upload')}
-            className={`flex-1 py-2 px-2 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2 whitespace-nowrap
-              ${inputMode === 'upload' 
-                ? 'bg-slate-100 dark:bg-slate-700/80 text-slate-900 dark:text-white shadow-sm' 
-                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'}
-            `}
-            disabled={isProcessing || isGeneratingRef || isAnalyzing || isEditing || isGeneratingVideo}
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
-            {t('mode.upload')}
-          </button>
-          <button
-            onClick={() => setInputModeAndClear('prompt')}
-            className={`flex-1 py-2 px-2 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2 whitespace-nowrap
-              ${inputMode === 'prompt' 
-                ? 'bg-indigo-600 dark:bg-indigo-600/80 text-white shadow-lg shadow-indigo-500/20' 
-                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'}
-            `}
-            disabled={isProcessing || isGeneratingRef || isAnalyzing || isEditing || isGeneratingVideo}
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-            {t('mode.prompt')}
-          </button>
-          <button
-            onClick={() => setInputModeAndClear('analyze')}
-            className={`flex-1 py-2 px-2 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2 whitespace-nowrap
-              ${inputMode === 'analyze' 
-                ? 'bg-purple-600 dark:bg-purple-600/80 text-white shadow-lg shadow-purple-500/20' 
-                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'}
-            `}
-            disabled={isProcessing || isGeneratingRef || isAnalyzing || isEditing || isGeneratingVideo}
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
-            {t('mode.analyze')}
-          </button>
-           <button
-            onClick={() => setInputModeAndClear('edit')}
-            className={`flex-1 py-2 px-2 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2 whitespace-nowrap
-              ${inputMode === 'edit' 
-                ? 'bg-pink-600 dark:bg-pink-600/80 text-white shadow-lg shadow-pink-500/20' 
-                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'}
-            `}
-            disabled={isProcessing || isGeneratingRef || isAnalyzing || isEditing || isGeneratingVideo}
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
-            {t('mode.edit')}
-          </button>
-          <button
-            onClick={() => setInputModeAndClear('video')}
-            className={`flex-1 py-2 px-2 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2 whitespace-nowrap
-              ${inputMode === 'video' 
-                ? 'bg-red-600 dark:bg-red-600/80 text-white shadow-lg shadow-red-500/20' 
-                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'}
-            `}
-            disabled={isProcessing || isGeneratingRef || isAnalyzing || isEditing || isGeneratingVideo}
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
-            {t('mode.video')}
-          </button>
-          <button
-            onClick={() => setInputModeAndClear('chat')}
-            className={`flex-1 py-2 px-2 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2 whitespace-nowrap
-              ${inputMode === 'chat' 
-                ? 'bg-blue-500 dark:bg-blue-500/80 text-white shadow-lg shadow-blue-500/20' 
-                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'}
-            `}
-            disabled={isProcessing || isGeneratingRef || isAnalyzing || isEditing || isGeneratingVideo}
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/></svg>
-            {t('mode.chat')}
-          </button>
-          <button
-            onClick={() => setInputModeAndClear('live')}
-            className={`flex-1 py-2 px-2 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2 whitespace-nowrap
-              ${inputMode === 'live' 
-                ? 'bg-green-500 dark:bg-green-500/80 text-white shadow-lg shadow-green-500/20' 
-                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'}
-            `}
-            disabled={isProcessing || isGeneratingRef || isAnalyzing || isEditing || isGeneratingVideo}
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/></svg>
-            {t('mode.live')}
-          </button>
-        </div>
-
-        {/* Input Section */}
-        <div className="w-full max-w-md mx-auto mb-8 min-h-[300px] relative">
-          
-          {/* Upload Zone for Upload, Analyze, Edit and Video modes */}
-          {(inputMode === 'upload' || inputMode === 'analyze' || inputMode === 'edit' || inputMode === 'video') && (
-            <>
-                <UploadZone 
-                  onFileSelect={processFile} 
-                  currentPreview={upload?.previewUrl || null}
-                  isGenerating={isProcessing || isAnalyzing || isEditing || isGeneratingVideo}
-                  t={t}
-                />
-                {/* Remove image button for video mode if user wants text-only */}
-                {inputMode === 'video' && upload && (
-                   <div className="flex justify-center -mt-6 mb-6">
-                      <button 
-                        onClick={() => setUpload(null)}
-                        className="text-xs text-red-500 hover:text-red-600 underline transition-colors"
-                      >
-                        {t('video.clear_image')}
-                      </button>
-                   </div>
-                )}
-            </>
-          )}
-
-          {/* Analyze Mode Specifics */}
-          {inputMode === 'analyze' && upload && (
-            <div className="flex flex-col gap-4 animate-in fade-in slide-in-from-bottom-4 duration-300">
-              <div className="relative">
-                <textarea
-                  value={analysisPrompt}
-                  onChange={(e) => setAnalysisPrompt(e.target.value)}
-                  placeholder={t('analyze.placeholder')}
-                  className="w-full h-32 bg-white dark:bg-slate-800/50 border border-slate-300 dark:border-slate-700 rounded-2xl p-4 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 transition-all resize-none shadow-sm"
-                  disabled={isAnalyzing}
-                />
-              </div>
-
-              <button
-                onClick={handleAnalyze}
-                disabled={!upload || isAnalyzing}
-                className={`
-                  w-full py-3 rounded-xl font-semibold text-white shadow-lg shadow-purple-500/25 transition-all transform hover:-translate-y-1 active:translate-y-0
-                  disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none flex items-center justify-center gap-2
-                  ${isAnalyzing ? 'bg-slate-400 dark:bg-slate-800' : 'bg-purple-600 hover:bg-purple-500'}
-                `}
-              >
-                {isAnalyzing ? (
-                  <>
-                    <svg className="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                    {t('analyze.loading')}
-                  </>
-                ) : (
-                  <>
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
-                    {t('analyze.btn')}
-                  </>
-                )}
-              </button>
-            </div>
-          )}
-
-          {/* Edit Mode Specifics */}
-          {inputMode === 'edit' && upload && (
-            <div className="flex flex-col gap-4 animate-in fade-in slide-in-from-bottom-4 duration-300">
-              <div className="relative">
-                <textarea
-                  value={editPrompt}
-                  onChange={(e) => setEditPrompt(e.target.value)}
-                  placeholder={t('edit.placeholder')}
-                  className="w-full h-32 bg-white dark:bg-slate-800/50 border border-slate-300 dark:border-slate-700 rounded-2xl p-4 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:ring-2 focus:ring-pink-500/50 focus:border-pink-500 transition-all resize-none shadow-sm"
-                  disabled={isEditing}
-                />
-              </div>
-
-              <button
-                onClick={handleEdit}
-                disabled={!upload || isEditing}
-                className={`
-                  w-full py-3 rounded-xl font-semibold text-white shadow-lg shadow-pink-500/25 transition-all transform hover:-translate-y-1 active:translate-y-0
-                  disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none flex items-center justify-center gap-2
-                  ${isEditing ? 'bg-slate-400 dark:bg-slate-800' : 'bg-pink-600 hover:bg-pink-500'}
-                `}
-              >
-                {isEditing ? (
-                  <>
-                    <svg className="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                    {t('edit.loading')}
-                  </>
-                ) : (
-                  <>
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
-                    {t('edit.btn')}
-                  </>
-                )}
-              </button>
-            </div>
-          )}
-
-          {/* Video Mode Specifics */}
-          {inputMode === 'video' && (
-             <div className="flex flex-col gap-4 animate-in fade-in slide-in-from-bottom-4 duration-300">
-                <div className="relative">
-                   <textarea
-                      value={videoPrompt}
-                      onChange={(e) => setVideoPrompt(e.target.value)}
-                      placeholder={t('video.placeholder')}
-                      className="w-full h-32 bg-white dark:bg-slate-800/50 border border-slate-300 dark:border-slate-700 rounded-2xl p-4 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:ring-2 focus:ring-red-500/50 focus:border-red-500 transition-all resize-none shadow-sm"
-                      disabled={isGeneratingVideo}
-                   />
-                </div>
-
-                 {/* Video Aspect Ratio Selector */}
-                <div className="flex gap-2 justify-center">
-                    <button
-                      onClick={() => setAspectRatio('16:9')}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${aspectRatio === '16:9' ? 'bg-red-600 text-white border-red-600' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-600'}`}
-                      disabled={isGeneratingVideo}
-                    >
-                      16:9
-                    </button>
-                    <button
-                      onClick={() => setAspectRatio('9:16')}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${aspectRatio === '9:16' ? 'bg-red-600 text-white border-red-600' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-600'}`}
-                      disabled={isGeneratingVideo}
-                    >
-                      9:16
-                    </button>
-                </div>
-
-                <button
-                   onClick={handleGenerateVideo}
-                   disabled={(!upload && !videoPrompt.trim()) || isGeneratingVideo}
-                   className={`
-                     w-full py-3 rounded-xl font-semibold text-white shadow-lg shadow-red-500/25 transition-all transform hover:-translate-y-1 active:translate-y-0
-                     disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none flex items-center justify-center gap-2
-                     ${isGeneratingVideo ? 'bg-slate-400 dark:bg-slate-800' : 'bg-red-600 hover:bg-red-500'}
-                   `}
-                >
-                   {isGeneratingVideo ? (
-                      <>
-                         <svg className="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                         {t('video.loading')}
-                      </>
-                   ) : (
-                      <>
-                         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
-                         {t('video.btn')}
-                      </>
-                   )}
-                </button>
-             </div>
-          )}
-
-          {/* Live API Mode Specifics */}
-          {inputMode === 'live' && (
-              <div className="flex flex-col items-center justify-center py-12 animate-in fade-in zoom-in-95 duration-300">
-                  <div className="relative group mb-8">
-                      {/* Pulse rings */}
-                      {liveStatus === 'connected' && (
-                          <>
-                             <div className="absolute inset-0 bg-green-500 rounded-full animate-ping opacity-20"></div>
-                             <div className="absolute inset-0 bg-green-500 rounded-full animate-pulse opacity-40 delay-150"></div>
-                          </>
-                      )}
-                      
-                      <button
-                          onClick={toggleLiveSession}
-                          disabled={liveStatus === 'connecting'}
-                          className={`
-                              relative w-32 h-32 rounded-full flex items-center justify-center transition-all duration-300 shadow-2xl
-                              ${liveStatus === 'connected' 
-                                  ? 'bg-green-600 hover:bg-red-600 shadow-green-500/50' 
-                                  : liveStatus === 'connecting'
-                                      ? 'bg-slate-300 dark:bg-slate-700 cursor-not-allowed'
-                                      : 'bg-gradient-to-br from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 shadow-indigo-500/30'
-                              }
-                          `}
-                      >
-                          {liveStatus === 'connecting' ? (
-                              <svg className="animate-spin h-12 w-12 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                              </svg>
-                          ) : liveStatus === 'connected' ? (
-                              <svg className="w-12 h-12 text-white group-hover:scale-110 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
-                              </svg>
-                          ) : (
-                              <svg className="w-12 h-12 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-                              </svg>
-                          )}
-                      </button>
-                  </div>
-
-                  <div className="text-center space-y-2">
-                      <h3 className="text-2xl font-bold text-slate-800 dark:text-white">
-                          {liveStatus === 'connected' 
-                              ? t('live.status.connected') 
-                              : liveStatus === 'connecting'
-                                  ? t('live.status.connecting')
-                                  : liveStatus === 'error' 
-                                      ? t('live.status.error')
-                                      : t('live.status.idle')
-                          }
-                      </h3>
-                      <p className="text-slate-500 dark:text-slate-400">
-                          {liveStatus === 'connected' 
-                              ? t('live.stop') 
-                              : t('live.start')
-                          }
-                      </p>
-                  </div>
-              </div>
-          )}
-
-          {/* Chat Mode Specifics */}
-          {inputMode === 'chat' && (
-              <div className="w-full max-w-2xl mx-auto flex flex-col h-[600px] bg-white dark:bg-slate-900/80 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-300">
-                  {/* Chat Header */}
-                  <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-slate-50/50 dark:bg-slate-900/50">
-                      <div className="flex items-center gap-3">
-                          <div className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center">
-                              <svg className="w-5 h-5 text-blue-600 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/></svg>
-                          </div>
-                          <h3 className="font-semibold text-slate-800 dark:text-white">Gemini Chat</h3>
-                      </div>
-                      <button 
-                        onClick={handleClearChat}
-                        className="text-xs text-slate-500 hover:text-red-500 transition-colors flex items-center gap-1"
-                      >
-                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                          {t('chat.clear')}
-                      </button>
-                  </div>
-
-                  {/* Messages Area */}
-                  <div 
-                    ref={chatContainerRef}
-                    className="flex-1 overflow-y-auto p-4 space-y-4 scroll-smooth"
-                  >
-                      {chatMessages.length === 0 && (
-                          <div className="h-full flex flex-col items-center justify-center text-center text-slate-400 p-8">
-                              <div className="w-16 h-16 bg-slate-100 dark:bg-slate-800 rounded-full flex items-center justify-center mb-4">
-                                  <svg className="w-8 h-8 text-slate-300 dark:text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
-                              </div>
-                              <p className="text-sm">{t('chat.welcome')}</p>
-                          </div>
-                      )}
-
-                      {chatMessages.map((msg) => (
-                          <div 
-                              key={msg.id} 
-                              className={`flex w-full ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                          >
-                              <div className={`flex gap-3 max-w-[80%] ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
-                                  <div className={`w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center ${msg.role === 'user' ? 'bg-indigo-100 dark:bg-indigo-900/50' : 'bg-blue-100 dark:bg-blue-900/50'}`}>
-                                      {msg.role === 'user' ? (
-                                         <img src={user.avatar} alt="User" className="w-8 h-8 rounded-full" />
-                                      ) : (
-                                         <svg className="w-5 h-5 text-blue-600 dark:text-blue-400" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22Z" stroke="currentColor" strokeWidth="1.5"/><path d="M8 12H16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/><path d="M12 16V8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
-                                      )}
-                                  </div>
-                                  <div 
-                                      className={`p-3 rounded-2xl text-sm whitespace-pre-wrap leading-relaxed shadow-sm ${
-                                          msg.role === 'user' 
-                                              ? 'bg-indigo-600 text-white rounded-tr-none' 
-                                              : 'bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700 rounded-tl-none'
-                                      }`}
-                                  >
-                                      {msg.text}
-                                  </div>
-                              </div>
-                          </div>
-                      ))}
-
-                      {isChatLoading && (
-                          <div className="flex w-full justify-start">
-                              <div className="flex gap-3 max-w-[80%]">
-                                   <div className="w-8 h-8 rounded-full bg-blue-100 dark:bg-blue-900/50 flex-shrink-0 flex items-center justify-center">
-                                       <svg className="w-5 h-5 text-blue-600 dark:text-blue-400 animate-pulse" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22Z" stroke="currentColor" strokeWidth="1.5"/></svg>
-                                   </div>
-                                   <div className="p-3 rounded-2xl rounded-tl-none bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center gap-2">
-                                       <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce"></span>
-                                       <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></span>
-                                       <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></span>
-                                   </div>
-                              </div>
-                          </div>
-                      )}
-                  </div>
-
-                  {/* Input Area */}
-                  <div className="p-4 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800">
-                      <form onSubmit={handleSendMessage} className="relative flex items-center gap-2">
-                          <input
-                              type="text"
-                              value={chatInput}
-                              onChange={(e) => setChatInput(e.target.value)}
-                              placeholder={t('chat.placeholder')}
-                              className="flex-1 bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all placeholder-slate-400"
-                              disabled={isChatLoading}
-                          />
-                          <button
-                              type="submit"
-                              disabled={!chatInput.trim() || isChatLoading}
-                              className="p-3 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-300 dark:disabled:bg-slate-700 text-white rounded-xl transition-colors shadow-lg shadow-blue-500/20 disabled:shadow-none"
-                          >
-                              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/></svg>
-                          </button>
-                      </form>
-                  </div>
-              </div>
-          )}
-
-          {/* Text Prompt Mode */}
-          {inputMode === 'prompt' && (
-            <div className="flex flex-col gap-4 animate-in fade-in zoom-in-95 duration-300">
-              {!upload || isGeneratingRef ? (
-                <>
-                  <div className="relative">
-                    <textarea
-                      value={prompt}
-                      onChange={(e) => setPrompt(e.target.value)}
-                      placeholder={t('prompt.placeholder')}
-                      className="w-full h-40 bg-white dark:bg-slate-800/50 border border-slate-300 dark:border-slate-700 rounded-2xl p-4 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:ring-2 focus:ring-indigo-500/50 focus:border-indigo-500 transition-all resize-none shadow-sm"
-                      disabled={isGeneratingRef}
-                    />
-                    <div className="absolute bottom-3 right-3 flex gap-2">
-                       {isGeneratingRef && <span className="text-xs text-indigo-500 dark:text-indigo-400 animate-pulse bg-slate-100 dark:bg-slate-900/80 px-2 py-1 rounded">{t('prompt.generating')}</span>}
-                    </div>
-                  </div>
-                  
-                  <button
-                    onClick={handleGenerateReference}
-                    disabled={!prompt.trim() || isGeneratingRef}
-                    className="w-full py-3 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-200 dark:disabled:bg-slate-800 disabled:text-slate-400 dark:disabled:text-slate-500 text-white rounded-xl font-semibold shadow-lg shadow-indigo-500/25 transition-all flex items-center justify-center gap-2"
-                  >
-                    {isGeneratingRef ? (
-                       <svg className="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                    ) : (
-                       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/></svg>
-                    )}
-                    {t('prompt.btn')}
-                  </button>
-                </>
-              ) : (
-                <div className="relative group">
-                  <div className="w-full h-64 rounded-2xl overflow-hidden border-2 border-indigo-500/50 bg-slate-50 dark:bg-slate-900/50 relative">
-                     <img 
-                       src={upload.previewUrl} 
-                       alt="Generated Reference" 
-                       className="w-full h-full object-contain" 
-                     />
-                  </div>
-                  <div className="flex gap-2 mt-2">
-                    <button 
-                      onClick={() => setUpload(null)}
-                      className="flex-1 py-2 bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white rounded-lg text-sm font-medium transition-colors"
-                    >
-                      {t('prompt.clear')}
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* Controls Section: Aspect Ratio & Quality (Hidden in Analyze, Edit, Video, and Chat Mode) */}
-        {inputMode !== 'analyze' && inputMode !== 'edit' && inputMode !== 'video' && inputMode !== 'chat' && inputMode !== 'live' && (
-          <div className="w-full max-w-2xl grid grid-cols-1 md:grid-cols-2 gap-8 mb-8 animate-in fade-in duration-300">
-            
-            {/* Aspect Ratio */}
-            <div>
-              <label className="block text-sm font-medium text-slate-500 dark:text-slate-400 mb-3 text-center md:text-left">
-                {t('label.aspect_ratio')}
-              </label>
-              <div className="grid grid-cols-2 gap-2">
-                {ASPECT_RATIOS.map((ratio) => (
-                  <button
-                    key={ratio.id}
-                    onClick={() => !isProcessing && setAspectRatio(ratio.id)}
-                    disabled={isProcessing || isGeneratingRef}
-                    className={`
-                      px-2 py-2 rounded-lg text-sm font-medium transition-all duration-200 border backdrop-blur-sm
-                      ${aspectRatio === ratio.id 
-                        ? 'bg-indigo-600/90 border-indigo-500 text-white shadow-lg shadow-indigo-500/20' 
-                        : 'bg-white dark:bg-slate-800/50 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700/60 hover:border-slate-300 dark:hover:border-slate-600 hover:text-slate-900 dark:hover:text-slate-200'}
-                      ${isProcessing || isGeneratingRef ? 'opacity-50 cursor-not-allowed' : ''}
-                    `}
-                  >
-                    {t(`ratio.${ratio.id}`)}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Quality */}
-            <div>
-              <label className="block text-sm font-medium text-slate-500 dark:text-slate-400 mb-3 text-center md:text-left">
-                {t('label.quality')}
-              </label>
-              <div className="grid grid-cols-3 gap-2">
-                {QUALITY_OPTIONS.map((opt) => (
-                  <button
-                    key={opt.id}
-                    onClick={() => !isProcessing && setQuality(opt.id)}
-                    disabled={isProcessing || isGeneratingRef}
-                    className={`
-                      px-2 py-2 rounded-lg text-sm font-medium transition-all duration-200 border backdrop-blur-sm
-                      ${quality === opt.id 
-                        ? 'bg-indigo-600/90 border-indigo-500 text-white shadow-lg shadow-indigo-500/20' 
-                        : 'bg-white dark:bg-slate-800/50 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700/60 hover:border-slate-300 dark:hover:border-slate-600 hover:text-slate-900 dark:hover:text-slate-200'}
-                      ${isProcessing || isGeneratingRef ? 'opacity-50 cursor-not-allowed' : ''}
-                    `}
-                  >
-                    {t(`quality.${opt.id}`)}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Generate Action Button (Hidden in Analyze, Edit, Video, and Chat Mode) */}
-        {inputMode !== 'analyze' && inputMode !== 'edit' && inputMode !== 'video' && inputMode !== 'chat' && inputMode !== 'live' && (
-          <div className="mb-16">
-            <button
-              onClick={handleGenerate}
-              disabled={!upload || isProcessing || isGeneratingRef}
-              className={`
-                relative overflow-hidden px-8 py-4 rounded-full font-semibold text-white shadow-xl
-                transition-all duration-300 transform hover:-translate-y-1 active:translate-y-0
-                disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none
-                ${!upload || isProcessing || isGeneratingRef ? 'bg-slate-400 dark:bg-slate-800' : 'bg-indigo-600 hover:bg-indigo-500 hover:shadow-indigo-500/25'}
-              `}
-            >
-              <span className="relative z-10 flex items-center gap-2">
-                {isProcessing ? (
-                  <>
-                    <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                    {t('btn.generating')}
-                  </>
-                ) : (
-                  <>
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path>
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
-                    </svg>
-                    {t('btn.generate')}
-                  </>
-                )}
-              </span>
-            </button>
-          </div>
-        )}
-
-        {/* Analysis Results */}
-        {inputMode === 'analyze' && analysisResult && (
-          <div className="w-full max-w-3xl animate-in fade-in slide-in-from-bottom-8 duration-700 pb-20">
-             <div className="bg-white/80 dark:bg-slate-900/60 backdrop-blur-lg border border-purple-500/30 rounded-2xl shadow-2xl overflow-hidden">
-                <div className="px-6 py-4 bg-purple-50 dark:bg-purple-900/20 border-b border-purple-100 dark:border-purple-800/50 flex items-center gap-3">
-                   <div className="p-2 bg-purple-100 dark:bg-purple-800/50 rounded-lg text-purple-600 dark:text-purple-300">
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
-                   </div>
-                   <h3 className="text-lg font-bold text-slate-800 dark:text-white">{t('analyze.result')}</h3>
-                </div>
-                <div className="p-6 md:p-8 text-slate-700 dark:text-slate-300 leading-relaxed whitespace-pre-wrap font-medium">
-                   {analysisResult}
-                </div>
-             </div>
-          </div>
-        )}
-
-        {/* Video Results */}
-        {inputMode === 'video' && generatedVideoUrl && (
-           <div className="w-full max-w-4xl animate-in fade-in slide-in-from-bottom-8 duration-700 pb-20 flex flex-col items-center">
-              <h3 className="text-xl font-bold mb-4 text-slate-900 dark:text-white">{t('video.generated')}</h3>
-              <div className="rounded-2xl overflow-hidden shadow-2xl border border-slate-200 dark:border-slate-800 bg-black">
-                  <video 
-                    src={generatedVideoUrl} 
-                    controls 
-                    autoPlay 
-                    loop 
-                    className="max-w-full max-h-[70vh]"
-                  />
-              </div>
-              <div className="mt-6">
-                 <a 
-                   href={generatedVideoUrl} 
-                   download="veo-generated-video.mp4"
-                   className="px-6 py-3 bg-slate-800 dark:bg-slate-700 hover:bg-slate-900 dark:hover:bg-slate-600 text-white rounded-full font-medium transition-colors flex items-center gap-2"
-                 >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
-                    {t('video.download')}
-                 </a>
-              </div>
-           </div>
-        )}
-
-        {/* Results Grid (Hidden in Analyze, Video, and Chat Mode) */}
-        {inputMode !== 'analyze' && inputMode !== 'video' && inputMode !== 'chat' && inputMode !== 'live' && (
-          <div className="w-full px-4 pb-20">
-            {generatedViews.length > 0 && (
-              <div className="animate-in fade-in slide-in-from-bottom-8 duration-700">
-                  
-                  {/* Results Toolbar */}
-                  {!isProcessing && hasResults && (
-                    <div className="w-full max-w-6xl mx-auto flex flex-col md:flex-row items-center justify-between mb-6 gap-4 px-1">
-                      {/* Filter Controls */}
-                      <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 w-full md:w-auto">
-                        <div className="flex items-center gap-2 overflow-x-auto max-w-full pb-2 md:pb-0 scrollbar-hide w-full md:w-auto">
-                          <span className="text-slate-500 dark:text-slate-400 text-sm font-medium mr-2 shrink-0">
-                            {isSelectionMode && selectedIds.length > 0 
-                              ? `${t('batch.selected')} (${selectedIds.length}):` 
-                              : isSelectionMode 
-                                ? `${t('batch.selected')} (0):`
-                                : t('filter.label')
-                            }
-                          </span>
-                          {FILTER_OPTIONS.map(f => (
-                              <button
-                                key={f.id}
-                                onClick={() => handleFilterSelect(f.id)}
-                                disabled={isSelectionMode && selectedIds.length === 0}
-                                className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all border whitespace-nowrap
-                                  ${activeFilterDisplay === f.id
-                                    ? 'bg-indigo-500/20 border-indigo-500 text-indigo-600 dark:text-indigo-300'
-                                    : 'bg-white dark:bg-slate-800/50 border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 hover:text-slate-900 dark:hover:text-white'
-                                  }
-                                  ${isSelectionMode && selectedIds.length === 0 ? 'opacity-50 cursor-not-allowed' : ''}
-                                `}
-                              >
-                                {t(`filter.${f.id}`)}
-                              </button>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-3 shrink-0">
-                        <button
-                          onClick={handleToggleSelectionMode}
-                          className={`
-                            flex items-center gap-2 px-4 py-2 rounded-lg transition-colors text-sm font-medium border shadow-sm backdrop-blur-sm
-                            ${isSelectionMode 
-                              ? 'bg-indigo-600 border-indigo-500 text-white' 
-                              : 'bg-white/80 dark:bg-slate-800/80 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600'}
-                          `}
-                        >
-                          {isSelectionMode ? (
-                            <>
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"/></svg>
-                              {t('btn.exit_select')}
-                            </>
-                          ) : (
-                            <>
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/></svg>
-                              {t('btn.select_mode')}
-                            </>
-                          )}
-                        </button>
-                        
-                        <button 
-                          onClick={handleDownloadAll}
-                          className="flex items-center gap-2 px-4 py-2 bg-white/80 dark:bg-slate-800/80 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white rounded-lg transition-colors text-sm font-medium border border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600 shadow-sm backdrop-blur-sm shrink-0"
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
-                          </svg>
-                          {selectedIds.length > 0 ? `${t('btn.save_selected')} (${selectedIds.length})` : t('btn.save_all')}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  <GeneratedGrid 
-                    items={generatedViews}
-                    selectedIds={selectedIds}
-                    isSelectionMode={isSelectionMode}
-                    onToggleSelection={handleSelectionToggle}
-                    onSelectAll={handleSelectAll}
-                    onDeselectAll={handleDeselectAll}
-                    onRotate={handleRotate}
-                    onUpdateView={handleUpdateView}
-                    onUpscale={handleUpscale}
-                    onBatchUpscale={handleBatchUpscale}
-                    originalImage={upload?.previewUrl || null}
-                    t={t}
-                  />
-              </div>
-            )}
-          </div>
-        )}
-
       </main>
-
-      {/* Footer */}
-      <footer className="py-6 text-center text-slate-500 dark:text-slate-600 text-sm relative z-10">
-        <p>{t('footer.text')}</p>
-      </footer>
     </div>
   );
 };

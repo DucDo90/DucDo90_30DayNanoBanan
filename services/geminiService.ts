@@ -1,4 +1,3 @@
-
 import { GoogleGenAI, Modality, LiveServerMessage } from "@google/genai";
 import { ImageQuality } from "../types";
 
@@ -325,20 +324,56 @@ export const generateVideo = async (
   } catch (error: any) {
     console.error("Video generation failed:", error);
     
-    const errorMessage = error.message || JSON.stringify(error);
+    let errorMessage = '';
+    let errorStatus = '';
+
+    // Handle structured error objects from SDK/API
+    if (error.error && error.error.message) {
+        // { error: { code, message, status } }
+        errorMessage = error.error.message;
+        errorStatus = error.error.status || '';
+    } else if (error.message) {
+        errorMessage = error.message;
+        // Try to parse the message if it looks like a JSON string
+        if (typeof errorMessage === 'string' && errorMessage.trim().startsWith('{')) {
+            try {
+                const parsed = JSON.parse(errorMessage);
+                if (parsed.error) {
+                    errorMessage = parsed.error.message;
+                    errorStatus = parsed.error.status;
+                }
+            } catch (e) {
+                // Keep original message if parsing fails
+            }
+        }
+    } else {
+        errorMessage = "Unknown error";
+    }
     
     // Check for specific error requiring key re-selection (404 or Not Found)
-    if ((errorMessage.includes("Requested entity was not found") || errorMessage.includes("404")) && win.aistudio) {
+    // This typically happens if the key doesn't have access to Veo
+    const isVeoAuthError = errorMessage.includes("Requested entity was not found") || 
+                           errorMessage.includes("404") || 
+                           errorMessage.includes("NOT_FOUND") ||
+                           errorStatus === 'NOT_FOUND';
+
+    if (isVeoAuthError && win.aistudio) {
          if (retryCount < 1) {
-             console.log("Retrying video generation with key selection...");
-             await win.aistudio.openSelectKey();
+             console.log("Veo 404 Error detected. Retrying video generation with key selection...");
+             try {
+                await win.aistudio.openSelectKey();
+             } catch (e) {
+                console.error("Failed to open key selector:", e);
+             }
              // Retry once
              return generateVideo(prompt, aspectRatio, base64Image, mimeType, retryCount + 1);
          } else {
              throw new Error("The selected API Key cannot access the Veo model. Please ensure your project is enabled for Veo or try a different key.");
          }
     }
-    throw error;
+    
+    // Re-throw with clean message
+    throw new Error(errorMessage || "Unknown video generation error");
   }
 };
 
