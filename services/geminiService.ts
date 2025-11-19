@@ -1,7 +1,9 @@
-import { GoogleGenAI, Modality } from "@google/genai";
+
+import { GoogleGenAI, Modality, LiveServerMessage } from "@google/genai";
 import { ImageQuality } from "../types";
 
 // Initialize the client with the API key from the environment
+// Note: Global instance might use stale key if loaded before key selection
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 /**
@@ -13,7 +15,9 @@ export const generateReferenceImage = async (
   aspectRatio: string = '1:1'
 ): Promise<{ url: string; mimeType: string }> => {
   try {
-    const response = await ai.models.generateImages({
+    // Use fresh instance for reliability
+    const currentAi = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const response = await currentAi.models.generateImages({
       model: 'imagen-4.0-generate-001',
       prompt: prompt,
       config: {
@@ -49,7 +53,6 @@ export const generateAngleImage = async (
   quality: ImageQuality = 'medium'
 ): Promise<string> => {
   try {
-    // Clean base64 string if it includes the data prefix
     const cleanBase64 = base64Image.includes('base64,') 
       ? base64Image.split('base64,')[1] 
       : base64Image;
@@ -75,7 +78,8 @@ export const generateAngleImage = async (
     Maintain the exact same character, object details, colors, and style. 
     White background preferred.`;
 
-    const response = await ai.models.generateContent({
+    const currentAi = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const response = await currentAi.models.generateContent({
       model: 'gemini-2.5-flash-image',
       contents: {
         parts: [
@@ -123,7 +127,8 @@ export const upscaleImage = async (
 
     const prompt = `Upscale this image. Enhance resolution, sharpen details, and improve clarity while maintaining the exact original composition, colors, and subject identity. Photorealistic 4k quality output.`;
 
-    const response = await ai.models.generateContent({
+    const currentAi = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const response = await currentAi.models.generateContent({
       model: 'gemini-2.5-flash-image',
       contents: {
         parts: [
@@ -169,7 +174,8 @@ export const editImage = async (
       ? base64Image.split('base64,')[1] 
       : base64Image;
 
-    const response = await ai.models.generateContent({
+    const currentAi = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const response = await currentAi.models.generateContent({
       model: 'gemini-2.5-flash-image',
       contents: {
         parts: [
@@ -214,7 +220,8 @@ export const analyzeImage = async (
       ? base64Image.split('base64,')[1] 
       : base64Image;
 
-    const response = await ai.models.generateContent({
+    const currentAi = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const response = await currentAi.models.generateContent({
       model: 'gemini-3-pro-preview',
       contents: {
         parts: [
@@ -333,4 +340,235 @@ export const generateVideo = async (
     }
     throw error;
   }
+};
+
+// Chat Session Storage
+let chatSession: any = null;
+
+/**
+ * Resets the current chat session.
+ */
+export const resetChatSession = () => {
+  chatSession = null;
+};
+
+/**
+ * Sends a message to the chat session and returns the response.
+ * Uses gemini-3-pro-preview.
+ */
+export const sendChatMessage = async (message: string): Promise<string> => {
+  if (!chatSession) {
+    // Create fresh instance for chat initialization
+    const currentAi = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    chatSession = currentAi.chats.create({
+      model: 'gemini-3-pro-preview',
+       config: {
+        systemInstruction: "You are a friendly and helpful AI assistant for the 30DayNanoBanana Multi-View Generator app. You can help users with questions about image generation, photography angles, or general inquiries.",
+      },
+    });
+  }
+  try {
+    const response = await chatSession.sendMessage({ message });
+    return response.text;
+  } catch (error) {
+    console.error("Chat error:", error);
+    throw error;
+  }
+};
+
+// --- Live API Implementation ---
+
+let activeInputContext: AudioContext | null = null;
+let activeOutputContext: AudioContext | null = null;
+let activeMediaStream: MediaStream | null = null;
+let activeSession: any = null; 
+let sessionPromise: Promise<any> | null = null;
+const activeSources = new Set<AudioBufferSourceNode>();
+let nextStartTime = 0;
+
+function decode(base64: string) {
+  const binaryString = atob(base64);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+}
+
+function encode(bytes: Uint8Array) {
+  let binary = '';
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+async function decodeAudioData(
+  data: Uint8Array,
+  ctx: AudioContext,
+  sampleRate: number,
+  numChannels: number,
+): Promise<AudioBuffer> {
+  const dataInt16 = new Int16Array(data.buffer);
+  const frameCount = dataInt16.length / numChannels;
+  const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
+
+  for (let channel = 0; channel < numChannels; channel++) {
+    const channelData = buffer.getChannelData(channel);
+    for (let i = 0; i < frameCount; i++) {
+      channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
+    }
+  }
+  return buffer;
+}
+
+function createBlob(data: Float32Array) {
+  const l = data.length;
+  const int16 = new Int16Array(l);
+  for (let i = 0; i < l; i++) {
+    int16[i] = data[i] * 32768;
+  }
+  return {
+    data: encode(new Uint8Array(int16.buffer)),
+    mimeType: 'audio/pcm;rate=16000',
+  };
+}
+
+export const stopLiveSession = () => {
+    if (activeSession) {
+        // The close method might not be available on the resolved session object in some SDK versions,
+        // but best practice is to clean up resources.
+        // The 'close' method isn't explicitly on the resolved session interface in all types,
+        // but we handle cleanup via closing contexts.
+        activeSession = null;
+    }
+    sessionPromise = null;
+
+    if (activeInputContext) {
+        activeInputContext.close();
+        activeInputContext = null;
+    }
+    if (activeOutputContext) {
+        activeOutputContext.close();
+        activeOutputContext = null;
+    }
+    if (activeMediaStream) {
+        activeMediaStream.getTracks().forEach(t => t.stop());
+        activeMediaStream = null;
+    }
+    activeSources.forEach(s => {
+        try { s.stop(); } catch(e) {}
+    });
+    activeSources.clear();
+    nextStartTime = 0;
+};
+
+export const startLiveSession = async (onStatus: (status: string) => void) => {
+    stopLiveSession(); // Ensure clean start
+    
+    onStatus('connecting');
+    
+    try {
+        // Check/Select API Key
+        const win = window as any;
+        if (win.aistudio) {
+             const hasKey = await win.aistudio.hasSelectedApiKey();
+             if (!hasKey) {
+                 await win.aistudio.openSelectKey();
+             }
+        }
+
+        // Create fresh instance with current key
+        const liveAi = new GoogleGenAI({ apiKey: process.env.API_KEY });
+
+        // Setup Audio
+        activeInputContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
+        activeOutputContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+        const outputNode = activeOutputContext.createGain();
+        outputNode.connect(activeOutputContext.destination);
+
+        activeMediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+        // Connect to Gemini
+        sessionPromise = liveAi.live.connect({
+            model: 'gemini-2.5-flash-native-audio-preview-09-2025',
+            config: {
+                responseModalities: [Modality.AUDIO],
+                speechConfig: {
+                    voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Puck' } },
+                },
+                systemInstruction: 'You are a helpful AI assistant. Respond concisely and naturally.',
+            },
+            callbacks: {
+                onopen: () => {
+                    onStatus('connected');
+                    // Start input streaming
+                    if (!activeInputContext || !activeMediaStream) return;
+                    
+                    const source = activeInputContext.createMediaStreamSource(activeMediaStream);
+                    const scriptProcessor = activeInputContext.createScriptProcessor(4096, 1, 1);
+                    
+                    scriptProcessor.onaudioprocess = (e) => {
+                        const inputData = e.inputBuffer.getChannelData(0);
+                        const pcmBlob = createBlob(inputData);
+                        if (sessionPromise) {
+                            sessionPromise.then(session => {
+                                session.sendRealtimeInput({ media: pcmBlob });
+                            });
+                        }
+                    };
+                    
+                    source.connect(scriptProcessor);
+                    scriptProcessor.connect(activeInputContext.destination);
+                },
+                onmessage: async (message: LiveServerMessage) => {
+                    const base64Audio = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
+                    if (base64Audio && activeOutputContext) {
+                        nextStartTime = Math.max(nextStartTime, activeOutputContext.currentTime);
+                        
+                        const audioBuffer = await decodeAudioData(
+                            decode(base64Audio),
+                            activeOutputContext,
+                            24000,
+                            1
+                        );
+                        
+                        const source = activeOutputContext.createBufferSource();
+                        source.buffer = audioBuffer;
+                        source.connect(outputNode);
+                        source.addEventListener('ended', () => {
+                            activeSources.delete(source);
+                        });
+                        source.start(nextStartTime);
+                        nextStartTime += audioBuffer.duration;
+                        activeSources.add(source);
+                    }
+                    
+                     if (message.serverContent?.interrupted) {
+                        activeSources.forEach(s => {
+                             try { s.stop(); } catch(e) {}
+                        });
+                        activeSources.clear();
+                        nextStartTime = 0;
+                     }
+                },
+                onclose: () => {
+                    onStatus('disconnected');
+                },
+                onerror: (err) => {
+                    console.error("Live API Error:", err);
+                    onStatus('error');
+                }
+            }
+        });
+        
+        activeSession = await sessionPromise;
+
+    } catch (error) {
+        console.error("Failed to start live session:", error);
+        onStatus('error');
+        stopLiveSession();
+    }
 };

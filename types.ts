@@ -84,3 +84,10 @@ export const FILTER_OPTIONS: FilterConfig[] = [
   { id: 'contrast', label: 'Contrast', cssProperty: 'contrast', min: 50, max: 200, defaultValue: 125, unit: '%' },
   { id: 'blur', label: 'Blur', cssProperty: 'blur', min: 0, max: 20, defaultValue: 4, unit: 'px' },
 ];
+
+export interface ChatMessage {
+  id: string;
+  role: 'user' | 'model';
+  text: string;
+  timestamp: number;
+}

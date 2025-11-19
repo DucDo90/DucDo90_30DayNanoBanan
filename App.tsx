@@ -1,9 +1,9 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { UploadZone } from './components/UploadZone';
 import { GeneratedGrid } from './components/GeneratedGrid';
-import { GeneratedView, TARGET_ANGLES, FileUpload, AspectRatio, ASPECT_RATIOS, ImageQuality, QUALITY_OPTIONS, ImageFilter, FILTER_OPTIONS } from './types';
-import { generateAngleImage, upscaleImage, generateReferenceImage, analyzeImage, editImage, generateVideo } from './services/geminiService';
+import { GeneratedView, TARGET_ANGLES, FileUpload, AspectRatio, ASPECT_RATIOS, ImageQuality, QUALITY_OPTIONS, ImageFilter, FILTER_OPTIONS, ChatMessage } from './types';
+import { generateAngleImage, upscaleImage, generateReferenceImage, analyzeImage, editImage, generateVideo, sendChatMessage, resetChatSession, startLiveSession, stopLiveSession } from './services/geminiService';
 import { translations, Language, languages } from './utils/translations';
 import { useAuth } from './contexts/AuthContext';
 import { AuthScreen } from './components/AuthScreen';
@@ -35,7 +35,8 @@ const rotateImage = (base64Str: string, direction: 'clockwise' | 'counterclockwi
   });
 };
 
-type InputMode = 'upload' | 'prompt' | 'analyze' | 'edit' | 'video';
+type InputMode = 'upload' | 'prompt' | 'analyze' | 'edit' | 'video' | 'chat' | 'live';
+type LiveStatus = 'idle' | 'connecting' | 'connected' | 'error' | 'disconnected';
 
 const App: React.FC = () => {
   const { user, logout, isLoading: isAuthLoading } = useAuth();
@@ -87,12 +88,28 @@ const App: React.FC = () => {
   const [isGeneratingVideo, setIsGeneratingVideo] = useState(false);
   const [generatedVideoUrl, setGeneratedVideoUrl] = useState<string | null>(null);
   
+  // Chat States
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState('');
+  const [isChatLoading, setIsChatLoading] = useState(false);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
+
+  // Live API State
+  const [liveStatus, setLiveStatus] = useState<LiveStatus>('idle');
+
   // Translation Helper
   const t = (key: string) => translations[currentLang][key] || translations['en'][key] || key;
 
   // Selection state for batch actions
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+
+  // Scroll to bottom of chat
+  useEffect(() => {
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    }
+  }, [chatMessages]);
 
   // If auth loading, show nothing or spinner (handled by auth context logic mostly, but good to safeguard)
   if (isAuthLoading) {
@@ -120,7 +137,7 @@ const App: React.FC = () => {
         mimeType: file.type,
       });
       // Reset previous results when new file is uploaded, unless in video mode where we keep image
-      if (inputMode !== 'video') {
+      if (inputMode !== 'video' && inputMode !== 'chat' && inputMode !== 'live') {
           setGeneratedViews([]);
           setSelectedIds([]);
           setIsSelectionMode(false);
@@ -282,6 +299,61 @@ const App: React.FC = () => {
       }
   };
 
+  const handleSendMessage = async (e?: React.FormEvent) => {
+      if (e) e.preventDefault();
+      if (!chatInput.trim()) return;
+
+      const userMsg: ChatMessage = {
+          id: Date.now().toString(),
+          role: 'user',
+          text: chatInput,
+          timestamp: Date.now()
+      };
+
+      setChatMessages(prev => [...prev, userMsg]);
+      setChatInput('');
+      setIsChatLoading(true);
+
+      try {
+          const responseText = await sendChatMessage(userMsg.text);
+          const botMsg: ChatMessage = {
+              id: (Date.now() + 1).toString(),
+              role: 'model',
+              text: responseText,
+              timestamp: Date.now()
+          };
+          setChatMessages(prev => [...prev, botMsg]);
+      } catch (error) {
+          console.error("Chat failed", error);
+          const errorMsg: ChatMessage = {
+              id: (Date.now() + 1).toString(),
+              role: 'model',
+              text: "Sorry, I encountered an error. Please try again.",
+              timestamp: Date.now()
+          };
+          setChatMessages(prev => [...prev, errorMsg]);
+      } finally {
+          setIsChatLoading(false);
+      }
+  };
+
+  const handleClearChat = () => {
+      setChatMessages([]);
+      resetChatSession();
+  };
+
+  const toggleLiveSession = () => {
+      if (liveStatus === 'connected' || liveStatus === 'connecting') {
+          stopLiveSession();
+          setLiveStatus('idle');
+      } else {
+          setLiveStatus('connecting');
+          startLiveSession((status) => {
+              setLiveStatus(status as LiveStatus);
+          });
+      }
+  };
+
   // Trigger generation for all angles
   const handleGenerate = async () => {
     if (!upload) return;
@@ -437,6 +509,12 @@ const App: React.FC = () => {
   const activeFilterDisplay = getEffectiveActiveFilter();
 
   const setInputModeAndClear = (mode: InputMode) => {
+      // Cleanup live session if leaving live mode
+      if (inputMode === 'live' && mode !== 'live') {
+          stopLiveSession();
+          setLiveStatus('idle');
+      }
+
       setInputMode(mode);
       setGeneratedViews([]);
       setSelectedIds([]);
@@ -530,15 +608,15 @@ const App: React.FC = () => {
         
         <div className="w-full max-w-2xl text-center mb-10">
           <h2 className="text-3xl md:text-4xl font-bold mb-4 text-slate-900 dark:text-white drop-shadow-sm transition-colors">
-            {inputMode === 'analyze' ? t('mode.analyze') : inputMode === 'edit' ? t('mode.edit') : inputMode === 'video' ? t('mode.video') : t('btn.generate')}
+            {inputMode === 'analyze' ? t('mode.analyze') : inputMode === 'edit' ? t('mode.edit') : inputMode === 'video' ? t('mode.video') : inputMode === 'chat' ? t('mode.chat') : inputMode === 'live' ? t('mode.live') : t('btn.generate')}
           </h2>
           <p className="text-slate-600 dark:text-slate-400 text-lg transition-colors">
-            {t('app.subtitle')}
+            {inputMode === 'live' ? t('live.subtitle') : t('app.subtitle')}
           </p>
         </div>
 
         {/* Mode Selection Tabs */}
-        <div className="w-full max-w-lg mx-auto mb-6 bg-white dark:bg-slate-900/50 p-1 rounded-xl border border-slate-200 dark:border-slate-800 flex shadow-sm overflow-x-auto scrollbar-hide">
+        <div className="w-full max-w-3xl mx-auto mb-6 bg-white dark:bg-slate-900/50 p-1 rounded-xl border border-slate-200 dark:border-slate-800 flex shadow-sm overflow-x-auto scrollbar-hide">
           <button
             onClick={() => setInputModeAndClear('upload')}
             className={`flex-1 py-2 px-2 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2 whitespace-nowrap
@@ -599,10 +677,34 @@ const App: React.FC = () => {
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
             {t('mode.video')}
           </button>
+          <button
+            onClick={() => setInputModeAndClear('chat')}
+            className={`flex-1 py-2 px-2 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2 whitespace-nowrap
+              ${inputMode === 'chat' 
+                ? 'bg-blue-500 dark:bg-blue-500/80 text-white shadow-lg shadow-blue-500/20' 
+                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'}
+            `}
+            disabled={isProcessing || isGeneratingRef || isAnalyzing || isEditing || isGeneratingVideo}
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/></svg>
+            {t('mode.chat')}
+          </button>
+          <button
+            onClick={() => setInputModeAndClear('live')}
+            className={`flex-1 py-2 px-2 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2 whitespace-nowrap
+              ${inputMode === 'live' 
+                ? 'bg-green-500 dark:bg-green-500/80 text-white shadow-lg shadow-green-500/20' 
+                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'}
+            `}
+            disabled={isProcessing || isGeneratingRef || isAnalyzing || isEditing || isGeneratingVideo}
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/></svg>
+            {t('mode.live')}
+          </button>
         </div>
 
         {/* Input Section */}
-        <div className="w-full max-w-md mx-auto mb-8 min-h-[300px]">
+        <div className="w-full max-w-md mx-auto mb-8 min-h-[300px] relative">
           
           {/* Upload Zone for Upload, Analyze, Edit and Video modes */}
           {(inputMode === 'upload' || inputMode === 'analyze' || inputMode === 'edit' || inputMode === 'video') && (
@@ -756,6 +858,169 @@ const App: React.FC = () => {
              </div>
           )}
 
+          {/* Live API Mode Specifics */}
+          {inputMode === 'live' && (
+              <div className="flex flex-col items-center justify-center py-12 animate-in fade-in zoom-in-95 duration-300">
+                  <div className="relative group mb-8">
+                      {/* Pulse rings */}
+                      {liveStatus === 'connected' && (
+                          <>
+                             <div className="absolute inset-0 bg-green-500 rounded-full animate-ping opacity-20"></div>
+                             <div className="absolute inset-0 bg-green-500 rounded-full animate-pulse opacity-40 delay-150"></div>
+                          </>
+                      )}
+                      
+                      <button
+                          onClick={toggleLiveSession}
+                          disabled={liveStatus === 'connecting'}
+                          className={`
+                              relative w-32 h-32 rounded-full flex items-center justify-center transition-all duration-300 shadow-2xl
+                              ${liveStatus === 'connected' 
+                                  ? 'bg-green-600 hover:bg-red-600 shadow-green-500/50' 
+                                  : liveStatus === 'connecting'
+                                      ? 'bg-slate-300 dark:bg-slate-700 cursor-not-allowed'
+                                      : 'bg-gradient-to-br from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 shadow-indigo-500/30'
+                              }
+                          `}
+                      >
+                          {liveStatus === 'connecting' ? (
+                              <svg className="animate-spin h-12 w-12 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                              </svg>
+                          ) : liveStatus === 'connected' ? (
+                              <svg className="w-12 h-12 text-white group-hover:scale-110 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
+                              </svg>
+                          ) : (
+                              <svg className="w-12 h-12 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                              </svg>
+                          )}
+                      </button>
+                  </div>
+
+                  <div className="text-center space-y-2">
+                      <h3 className="text-2xl font-bold text-slate-800 dark:text-white">
+                          {liveStatus === 'connected' 
+                              ? t('live.status.connected') 
+                              : liveStatus === 'connecting'
+                                  ? t('live.status.connecting')
+                                  : liveStatus === 'error' 
+                                      ? t('live.status.error')
+                                      : t('live.status.idle')
+                          }
+                      </h3>
+                      <p className="text-slate-500 dark:text-slate-400">
+                          {liveStatus === 'connected' 
+                              ? t('live.stop') 
+                              : t('live.start')
+                          }
+                      </p>
+                  </div>
+              </div>
+          )}
+
+          {/* Chat Mode Specifics */}
+          {inputMode === 'chat' && (
+              <div className="w-full max-w-2xl mx-auto flex flex-col h-[600px] bg-white dark:bg-slate-900/80 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-300">
+                  {/* Chat Header */}
+                  <div className="p-4 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center bg-slate-50/50 dark:bg-slate-900/50">
+                      <div className="flex items-center gap-3">
+                          <div className="w-8 h-8 rounded-full bg-blue-500/10 flex items-center justify-center">
+                              <svg className="w-5 h-5 text-blue-600 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/></svg>
+                          </div>
+                          <h3 className="font-semibold text-slate-800 dark:text-white">Gemini Chat</h3>
+                      </div>
+                      <button 
+                        onClick={handleClearChat}
+                        className="text-xs text-slate-500 hover:text-red-500 transition-colors flex items-center gap-1"
+                      >
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                          {t('chat.clear')}
+                      </button>
+                  </div>
+
+                  {/* Messages Area */}
+                  <div 
+                    ref={chatContainerRef}
+                    className="flex-1 overflow-y-auto p-4 space-y-4 scroll-smooth"
+                  >
+                      {chatMessages.length === 0 && (
+                          <div className="h-full flex flex-col items-center justify-center text-center text-slate-400 p-8">
+                              <div className="w-16 h-16 bg-slate-100 dark:bg-slate-800 rounded-full flex items-center justify-center mb-4">
+                                  <svg className="w-8 h-8 text-slate-300 dark:text-slate-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"/></svg>
+                              </div>
+                              <p className="text-sm">{t('chat.welcome')}</p>
+                          </div>
+                      )}
+
+                      {chatMessages.map((msg) => (
+                          <div 
+                              key={msg.id} 
+                              className={`flex w-full ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                          >
+                              <div className={`flex gap-3 max-w-[80%] ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
+                                  <div className={`w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center ${msg.role === 'user' ? 'bg-indigo-100 dark:bg-indigo-900/50' : 'bg-blue-100 dark:bg-blue-900/50'}`}>
+                                      {msg.role === 'user' ? (
+                                         <img src={user.avatar} alt="User" className="w-8 h-8 rounded-full" />
+                                      ) : (
+                                         <svg className="w-5 h-5 text-blue-600 dark:text-blue-400" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22Z" stroke="currentColor" strokeWidth="1.5"/><path d="M8 12H16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/><path d="M12 16V8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                                      )}
+                                  </div>
+                                  <div 
+                                      className={`p-3 rounded-2xl text-sm whitespace-pre-wrap leading-relaxed shadow-sm ${
+                                          msg.role === 'user' 
+                                              ? 'bg-indigo-600 text-white rounded-tr-none' 
+                                              : 'bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700 rounded-tl-none'
+                                      }`}
+                                  >
+                                      {msg.text}
+                                  </div>
+                              </div>
+                          </div>
+                      ))}
+
+                      {isChatLoading && (
+                          <div className="flex w-full justify-start">
+                              <div className="flex gap-3 max-w-[80%]">
+                                   <div className="w-8 h-8 rounded-full bg-blue-100 dark:bg-blue-900/50 flex-shrink-0 flex items-center justify-center">
+                                       <svg className="w-5 h-5 text-blue-600 dark:text-blue-400 animate-pulse" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22Z" stroke="currentColor" strokeWidth="1.5"/></svg>
+                                   </div>
+                                   <div className="p-3 rounded-2xl rounded-tl-none bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 flex items-center gap-2">
+                                       <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce"></span>
+                                       <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></span>
+                                       <span className="w-1.5 h-1.5 bg-slate-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></span>
+                                   </div>
+                              </div>
+                          </div>
+                      )}
+                  </div>
+
+                  {/* Input Area */}
+                  <div className="p-4 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800">
+                      <form onSubmit={handleSendMessage} className="relative flex items-center gap-2">
+                          <input
+                              type="text"
+                              value={chatInput}
+                              onChange={(e) => setChatInput(e.target.value)}
+                              placeholder={t('chat.placeholder')}
+                              className="flex-1 bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all placeholder-slate-400"
+                              disabled={isChatLoading}
+                          />
+                          <button
+                              type="submit"
+                              disabled={!chatInput.trim() || isChatLoading}
+                              className="p-3 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-300 dark:disabled:bg-slate-700 text-white rounded-xl transition-colors shadow-lg shadow-blue-500/20 disabled:shadow-none"
+                          >
+                              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/></svg>
+                          </button>
+                      </form>
+                  </div>
+              </div>
+          )}
+
           {/* Text Prompt Mode */}
           {inputMode === 'prompt' && (
             <div className="flex flex-col gap-4 animate-in fade-in zoom-in-95 duration-300">
@@ -810,8 +1075,8 @@ const App: React.FC = () => {
           )}
         </div>
 
-        {/* Controls Section: Aspect Ratio & Quality (Hidden in Analyze, Edit, and Video Mode - Video has its own) */}
-        {inputMode !== 'analyze' && inputMode !== 'edit' && inputMode !== 'video' && (
+        {/* Controls Section: Aspect Ratio & Quality (Hidden in Analyze, Edit, Video, and Chat Mode) */}
+        {inputMode !== 'analyze' && inputMode !== 'edit' && inputMode !== 'video' && inputMode !== 'chat' && inputMode !== 'live' && (
           <div className="w-full max-w-2xl grid grid-cols-1 md:grid-cols-2 gap-8 mb-8 animate-in fade-in duration-300">
             
             {/* Aspect Ratio */}
@@ -866,8 +1131,8 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* Generate Action Button (Hidden in Analyze, Edit, and Video Mode) */}
-        {inputMode !== 'analyze' && inputMode !== 'edit' && inputMode !== 'video' && (
+        {/* Generate Action Button (Hidden in Analyze, Edit, Video, and Chat Mode) */}
+        {inputMode !== 'analyze' && inputMode !== 'edit' && inputMode !== 'video' && inputMode !== 'chat' && inputMode !== 'live' && (
           <div className="mb-16">
             <button
               onClick={handleGenerate}
@@ -945,8 +1210,8 @@ const App: React.FC = () => {
            </div>
         )}
 
-        {/* Results Grid (Hidden in Analyze and Video Mode) */}
-        {inputMode !== 'analyze' && inputMode !== 'video' && (
+        {/* Results Grid (Hidden in Analyze, Video, and Chat Mode) */}
+        {inputMode !== 'analyze' && inputMode !== 'video' && inputMode !== 'chat' && inputMode !== 'live' && (
           <div className="w-full px-4 pb-20">
             {generatedViews.length > 0 && (
               <div className="animate-in fade-in slide-in-from-bottom-8 duration-700">
