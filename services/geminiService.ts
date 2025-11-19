@@ -1,4 +1,3 @@
-
 import { GoogleGenAI, Modality } from "@google/genai";
 import { ImageQuality } from "../types";
 
@@ -158,6 +157,51 @@ export const upscaleImage = async (
 };
 
 /**
+ * Edits an image based on a text prompt using Gemini 2.5 Flash Image.
+ */
+export const editImage = async (
+  base64Image: string,
+  mimeType: string,
+  promptText: string
+): Promise<string> => {
+  try {
+    const cleanBase64 = base64Image.includes('base64,') 
+      ? base64Image.split('base64,')[1] 
+      : base64Image;
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash-image',
+      contents: {
+        parts: [
+          {
+            inlineData: {
+              data: cleanBase64,
+              mimeType: mimeType,
+            },
+          },
+          {
+            text: promptText,
+          },
+        ],
+      },
+      config: {
+        responseModalities: [Modality.IMAGE],
+      },
+    });
+
+    const part = response.candidates?.[0]?.content?.parts?.[0];
+    if (part && part.inlineData && part.inlineData.data) {
+        return `data:image/png;base64,${part.inlineData.data}`;
+    }
+
+    throw new Error("No image data returned from edit generation.");
+  } catch (error) {
+    console.error("Error editing image:", error);
+    throw error;
+  }
+};
+
+/**
  * Analyzes an image using Gemini 3 Pro.
  */
 export const analyzeImage = async (
@@ -188,6 +232,105 @@ export const analyzeImage = async (
     return response.text || "No analysis generated.";
   } catch (error) {
     console.error("Error analyzing image:", error);
+    throw error;
+  }
+};
+
+/**
+ * Generates a video using Veo model (veo-3.1-fast-generate-preview).
+ * Supports both Text-to-Video and Image-to-Video.
+ * Includes retry logic for API Key selection.
+ */
+export const generateVideo = async (
+  prompt: string,
+  aspectRatio: string,
+  base64Image?: string,
+  mimeType?: string,
+  retryCount = 0
+): Promise<string> => {
+  // API Key check for Veo - initial check
+  const win = window as any;
+  if (retryCount === 0 && win.aistudio) {
+    const hasKey = await win.aistudio.hasSelectedApiKey();
+    if (!hasKey) {
+      await win.aistudio.openSelectKey();
+    }
+  }
+
+  // Create new instance to ensure fresh key usage
+  const freshAi = new GoogleGenAI({ apiKey: process.env.API_KEY });
+
+  let operation;
+  
+  // Ensure Veo supported aspect ratios
+  const validRatio = (aspectRatio === '16:9' || aspectRatio === '9:16') ? aspectRatio : '16:9';
+
+  const config = {
+    numberOfVideos: 1,
+    resolution: '720p',
+    aspectRatio: validRatio as any,
+  };
+
+  try {
+    if (base64Image && mimeType) {
+      const cleanBase64 = base64Image.includes('base64,') 
+        ? base64Image.split('base64,')[1] 
+        : base64Image;
+
+      operation = await freshAi.models.generateVideos({
+        model: 'veo-3.1-fast-generate-preview',
+        prompt: prompt || undefined,
+        image: {
+          imageBytes: cleanBase64,
+          mimeType: mimeType,
+        },
+        config: config as any
+      });
+    } else {
+        if (!prompt) throw new Error("Prompt is required for text-to-video");
+        operation = await freshAi.models.generateVideos({
+            model: 'veo-3.1-fast-generate-preview',
+            prompt: prompt,
+            config: config as any
+        });
+    }
+
+    // Polling
+    while (!operation.done) {
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        operation = await freshAi.operations.getVideosOperation({ operation: operation });
+    }
+
+    if (operation.error) {
+        throw new Error(operation.error.message || "Video generation failed");
+    }
+
+    const videoUri = operation.response?.generatedVideos?.[0]?.video?.uri;
+    if (!videoUri) throw new Error("No video URI returned");
+
+    // Fetch with key
+    const response = await fetch(`${videoUri}&key=${process.env.API_KEY}`);
+    if (!response.ok) throw new Error("Failed to download video content");
+
+    const blob = await response.blob();
+    return URL.createObjectURL(blob);
+
+  } catch (error: any) {
+    console.error("Video generation failed:", error);
+    
+    const errorMessage = error.message || JSON.stringify(error);
+    
+    // Check for specific error requiring key re-selection (404 or Not Found)
+    if ((errorMessage.includes("Requested entity was not found") || errorMessage.includes("404")) && win.aistudio) {
+         if (retryCount < 1) {
+             console.log("Retrying video generation with key selection...");
+             await win.aistudio.openSelectKey();
+             // Retry once
+             return generateVideo(prompt, aspectRatio, base64Image, mimeType, retryCount + 1);
+         } else {
+             throw new Error("The selected API Key cannot access the Veo model. Please ensure your project is enabled for Veo or try a different key.");
+         }
+    }
     throw error;
   }
 };

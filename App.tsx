@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { UploadZone } from './components/UploadZone';
 import { GeneratedGrid } from './components/GeneratedGrid';
 import { GeneratedView, TARGET_ANGLES, FileUpload, AspectRatio, ASPECT_RATIOS, ImageQuality, QUALITY_OPTIONS, ImageFilter, FILTER_OPTIONS } from './types';
-import { generateAngleImage, upscaleImage, generateReferenceImage, analyzeImage } from './services/geminiService';
+import { generateAngleImage, upscaleImage, generateReferenceImage, analyzeImage, editImage, generateVideo } from './services/geminiService';
 import { translations, Language, languages } from './utils/translations';
 import { useAuth } from './contexts/AuthContext';
 import { AuthScreen } from './components/AuthScreen';
@@ -35,7 +35,7 @@ const rotateImage = (base64Str: string, direction: 'clockwise' | 'counterclockwi
   });
 };
 
-type InputMode = 'upload' | 'prompt' | 'analyze';
+type InputMode = 'upload' | 'prompt' | 'analyze' | 'edit' | 'video';
 
 const App: React.FC = () => {
   const { user, logout, isLoading: isAuthLoading } = useAuth();
@@ -68,8 +68,8 @@ const App: React.FC = () => {
     setTheme(prev => prev === 'dark' ? 'light' : 'dark');
   };
   
-  // New states for Prompt Generation & Analysis
-  const [inputMode, setInputMode] = useState<InputMode>('upload');
+  // New states for Prompt Generation, Analysis, Edit & Video
+  const [inputMode, setInputMode] = useState<InputMode>('video');
   const [prompt, setPrompt] = useState('');
   const [isGeneratingRef, setIsGeneratingRef] = useState(false);
 
@@ -77,6 +77,15 @@ const App: React.FC = () => {
   const [analysisPrompt, setAnalysisPrompt] = useState('');
   const [analysisResult, setAnalysisResult] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+
+  // Edit States
+  const [editPrompt, setEditPrompt] = useState('');
+  const [isEditing, setIsEditing] = useState(false);
+
+  // Video States
+  const [videoPrompt, setVideoPrompt] = useState('');
+  const [isGeneratingVideo, setIsGeneratingVideo] = useState(false);
+  const [generatedVideoUrl, setGeneratedVideoUrl] = useState<string | null>(null);
   
   // Translation Helper
   const t = (key: string) => translations[currentLang][key] || translations['en'][key] || key;
@@ -110,11 +119,13 @@ const App: React.FC = () => {
         base64: base64,
         mimeType: file.type,
       });
-      // Reset previous results when new file is uploaded
-      setGeneratedViews([]);
-      setSelectedIds([]);
-      setIsSelectionMode(false);
-      setAnalysisResult(''); // Reset analysis
+      // Reset previous results when new file is uploaded, unless in video mode where we keep image
+      if (inputMode !== 'video') {
+          setGeneratedViews([]);
+          setSelectedIds([]);
+          setIsSelectionMode(false);
+          setAnalysisResult('');
+      }
     };
     reader.readAsDataURL(file);
   };
@@ -201,6 +212,74 @@ const App: React.FC = () => {
     } finally {
       setIsAnalyzing(false);
     }
+  };
+
+  const handleEdit = async () => {
+      if (!upload) return;
+      setIsEditing(true);
+      setSelectedIds([]);
+      setIsSelectionMode(false);
+      // Prepare placeholder view
+      setGeneratedViews([{
+          id: 'edit',
+          angleName: 'edit', // key for translation
+          imageUrl: null,
+          isLoading: true,
+          error: null,
+          filter: 'none',
+          filterIntensity: 100
+      }]);
+
+      try {
+          const promptText = editPrompt.trim() || "Enhance this image.";
+          const imageUrl = await editImage(upload.base64, upload.mimeType, promptText);
+          setGeneratedViews([{
+              id: 'edit',
+              angleName: 'edit',
+              imageUrl,
+              isLoading: false,
+              error: null,
+              filter: 'none',
+              filterIntensity: 100
+          }]);
+      } catch (e) {
+          console.error("Edit failed", e);
+          setGeneratedViews([{
+              id: 'edit',
+              angleName: 'edit',
+              imageUrl: null,
+              isLoading: false,
+              error: "Failed to edit image",
+              filter: 'none',
+              filterIntensity: 100
+          }]);
+      } finally {
+          setIsEditing(false);
+      }
+  }
+
+  const handleGenerateVideo = async () => {
+      if (!videoPrompt.trim() && !upload) return;
+      setIsGeneratingVideo(true);
+      setGeneratedVideoUrl(null);
+
+      try {
+          // Ensure Veo supported aspects
+          const veoAspect = (aspectRatio === '16:9' || aspectRatio === '9:16') ? aspectRatio : '16:9';
+          
+          const url = await generateVideo(
+              videoPrompt, 
+              veoAspect, 
+              upload?.base64, 
+              upload?.mimeType
+          );
+          setGeneratedVideoUrl(url);
+      } catch (error: any) {
+          console.error("Video generation failed", error);
+          alert(error.message || "Failed to generate video");
+      } finally {
+          setIsGeneratingVideo(false);
+      }
   };
 
   // Trigger generation for all angles
@@ -342,7 +421,7 @@ const App: React.FC = () => {
     }
   };
 
-  const hasResults = generatedViews.some(v => v.imageUrl);
+  const hasResults = generatedViews.length > 0;
   
   const getEffectiveActiveFilter = () => {
      if (generatedViews.length === 0) return 'none';
@@ -356,6 +435,18 @@ const App: React.FC = () => {
   };
 
   const activeFilterDisplay = getEffectiveActiveFilter();
+
+  const setInputModeAndClear = (mode: InputMode) => {
+      setInputMode(mode);
+      setGeneratedViews([]);
+      setSelectedIds([]);
+      setIsSelectionMode(false);
+      setAnalysisResult('');
+      setGeneratedVideoUrl(null);
+      if (mode === 'video') {
+         setAspectRatio('16:9');
+      }
+  };
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-200 relative overflow-x-hidden transition-colors duration-300">
@@ -439,7 +530,7 @@ const App: React.FC = () => {
         
         <div className="w-full max-w-2xl text-center mb-10">
           <h2 className="text-3xl md:text-4xl font-bold mb-4 text-slate-900 dark:text-white drop-shadow-sm transition-colors">
-            {inputMode === 'analyze' ? t('mode.analyze') : t('btn.generate')}
+            {inputMode === 'analyze' ? t('mode.analyze') : inputMode === 'edit' ? t('mode.edit') : inputMode === 'video' ? t('mode.video') : t('btn.generate')}
           </h2>
           <p className="text-slate-600 dark:text-slate-400 text-lg transition-colors">
             {t('app.subtitle')}
@@ -449,54 +540,91 @@ const App: React.FC = () => {
         {/* Mode Selection Tabs */}
         <div className="w-full max-w-lg mx-auto mb-6 bg-white dark:bg-slate-900/50 p-1 rounded-xl border border-slate-200 dark:border-slate-800 flex shadow-sm overflow-x-auto scrollbar-hide">
           <button
-            onClick={() => setInputMode('upload')}
+            onClick={() => setInputModeAndClear('upload')}
             className={`flex-1 py-2 px-2 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2 whitespace-nowrap
               ${inputMode === 'upload' 
                 ? 'bg-slate-100 dark:bg-slate-700/80 text-slate-900 dark:text-white shadow-sm' 
                 : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'}
             `}
-            disabled={isProcessing || isGeneratingRef || isAnalyzing}
+            disabled={isProcessing || isGeneratingRef || isAnalyzing || isEditing || isGeneratingVideo}
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
             {t('mode.upload')}
           </button>
           <button
-            onClick={() => setInputMode('prompt')}
+            onClick={() => setInputModeAndClear('prompt')}
             className={`flex-1 py-2 px-2 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2 whitespace-nowrap
               ${inputMode === 'prompt' 
                 ? 'bg-indigo-600 dark:bg-indigo-600/80 text-white shadow-lg shadow-indigo-500/20' 
                 : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'}
             `}
-            disabled={isProcessing || isGeneratingRef || isAnalyzing}
+            disabled={isProcessing || isGeneratingRef || isAnalyzing || isEditing || isGeneratingVideo}
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
             {t('mode.prompt')}
           </button>
           <button
-            onClick={() => setInputMode('analyze')}
+            onClick={() => setInputModeAndClear('analyze')}
             className={`flex-1 py-2 px-2 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2 whitespace-nowrap
               ${inputMode === 'analyze' 
                 ? 'bg-purple-600 dark:bg-purple-600/80 text-white shadow-lg shadow-purple-500/20' 
                 : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'}
             `}
-            disabled={isProcessing || isGeneratingRef || isAnalyzing}
+            disabled={isProcessing || isGeneratingRef || isAnalyzing || isEditing || isGeneratingVideo}
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
             {t('mode.analyze')}
+          </button>
+           <button
+            onClick={() => setInputModeAndClear('edit')}
+            className={`flex-1 py-2 px-2 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2 whitespace-nowrap
+              ${inputMode === 'edit' 
+                ? 'bg-pink-600 dark:bg-pink-600/80 text-white shadow-lg shadow-pink-500/20' 
+                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'}
+            `}
+            disabled={isProcessing || isGeneratingRef || isAnalyzing || isEditing || isGeneratingVideo}
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+            {t('mode.edit')}
+          </button>
+          <button
+            onClick={() => setInputModeAndClear('video')}
+            className={`flex-1 py-2 px-2 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2 whitespace-nowrap
+              ${inputMode === 'video' 
+                ? 'bg-red-600 dark:bg-red-600/80 text-white shadow-lg shadow-red-500/20' 
+                : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'}
+            `}
+            disabled={isProcessing || isGeneratingRef || isAnalyzing || isEditing || isGeneratingVideo}
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+            {t('mode.video')}
           </button>
         </div>
 
         {/* Input Section */}
         <div className="w-full max-w-md mx-auto mb-8 min-h-[300px]">
           
-          {/* Upload Mode & Analyze Mode Shared UploadZone */}
-          {(inputMode === 'upload' || inputMode === 'analyze') && (
-            <UploadZone 
-              onFileSelect={processFile} 
-              currentPreview={upload?.previewUrl || null}
-              isGenerating={isProcessing || isAnalyzing}
-              t={t}
-            />
+          {/* Upload Zone for Upload, Analyze, Edit and Video modes */}
+          {(inputMode === 'upload' || inputMode === 'analyze' || inputMode === 'edit' || inputMode === 'video') && (
+            <>
+                <UploadZone 
+                  onFileSelect={processFile} 
+                  currentPreview={upload?.previewUrl || null}
+                  isGenerating={isProcessing || isAnalyzing || isEditing || isGeneratingVideo}
+                  t={t}
+                />
+                {/* Remove image button for video mode if user wants text-only */}
+                {inputMode === 'video' && upload && (
+                   <div className="flex justify-center -mt-6 mb-6">
+                      <button 
+                        onClick={() => setUpload(null)}
+                        className="text-xs text-red-500 hover:text-red-600 underline transition-colors"
+                      >
+                        {t('video.clear_image')}
+                      </button>
+                   </div>
+                )}
+            </>
           )}
 
           {/* Analyze Mode Specifics */}
@@ -534,6 +662,98 @@ const App: React.FC = () => {
                 )}
               </button>
             </div>
+          )}
+
+          {/* Edit Mode Specifics */}
+          {inputMode === 'edit' && upload && (
+            <div className="flex flex-col gap-4 animate-in fade-in slide-in-from-bottom-4 duration-300">
+              <div className="relative">
+                <textarea
+                  value={editPrompt}
+                  onChange={(e) => setEditPrompt(e.target.value)}
+                  placeholder={t('edit.placeholder')}
+                  className="w-full h-32 bg-white dark:bg-slate-800/50 border border-slate-300 dark:border-slate-700 rounded-2xl p-4 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:ring-2 focus:ring-pink-500/50 focus:border-pink-500 transition-all resize-none shadow-sm"
+                  disabled={isEditing}
+                />
+              </div>
+
+              <button
+                onClick={handleEdit}
+                disabled={!upload || isEditing}
+                className={`
+                  w-full py-3 rounded-xl font-semibold text-white shadow-lg shadow-pink-500/25 transition-all transform hover:-translate-y-1 active:translate-y-0
+                  disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none flex items-center justify-center gap-2
+                  ${isEditing ? 'bg-slate-400 dark:bg-slate-800' : 'bg-pink-600 hover:bg-pink-500'}
+                `}
+              >
+                {isEditing ? (
+                  <>
+                    <svg className="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                    {t('edit.loading')}
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+                    {t('edit.btn')}
+                  </>
+                )}
+              </button>
+            </div>
+          )}
+
+          {/* Video Mode Specifics */}
+          {inputMode === 'video' && (
+             <div className="flex flex-col gap-4 animate-in fade-in slide-in-from-bottom-4 duration-300">
+                <div className="relative">
+                   <textarea
+                      value={videoPrompt}
+                      onChange={(e) => setVideoPrompt(e.target.value)}
+                      placeholder={t('video.placeholder')}
+                      className="w-full h-32 bg-white dark:bg-slate-800/50 border border-slate-300 dark:border-slate-700 rounded-2xl p-4 text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:ring-2 focus:ring-red-500/50 focus:border-red-500 transition-all resize-none shadow-sm"
+                      disabled={isGeneratingVideo}
+                   />
+                </div>
+
+                 {/* Video Aspect Ratio Selector */}
+                <div className="flex gap-2 justify-center">
+                    <button
+                      onClick={() => setAspectRatio('16:9')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${aspectRatio === '16:9' ? 'bg-red-600 text-white border-red-600' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-600'}`}
+                      disabled={isGeneratingVideo}
+                    >
+                      16:9
+                    </button>
+                    <button
+                      onClick={() => setAspectRatio('9:16')}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${aspectRatio === '9:16' ? 'bg-red-600 text-white border-red-600' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-600'}`}
+                      disabled={isGeneratingVideo}
+                    >
+                      9:16
+                    </button>
+                </div>
+
+                <button
+                   onClick={handleGenerateVideo}
+                   disabled={(!upload && !videoPrompt.trim()) || isGeneratingVideo}
+                   className={`
+                     w-full py-3 rounded-xl font-semibold text-white shadow-lg shadow-red-500/25 transition-all transform hover:-translate-y-1 active:translate-y-0
+                     disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none flex items-center justify-center gap-2
+                     ${isGeneratingVideo ? 'bg-slate-400 dark:bg-slate-800' : 'bg-red-600 hover:bg-red-500'}
+                   `}
+                >
+                   {isGeneratingVideo ? (
+                      <>
+                         <svg className="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                         {t('video.loading')}
+                      </>
+                   ) : (
+                      <>
+                         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+                         {t('video.btn')}
+                      </>
+                   )}
+                </button>
+             </div>
           )}
 
           {/* Text Prompt Mode */}
@@ -590,8 +810,8 @@ const App: React.FC = () => {
           )}
         </div>
 
-        {/* Controls Section: Aspect Ratio & Quality (Hidden in Analyze Mode) */}
-        {inputMode !== 'analyze' && (
+        {/* Controls Section: Aspect Ratio & Quality (Hidden in Analyze, Edit, and Video Mode - Video has its own) */}
+        {inputMode !== 'analyze' && inputMode !== 'edit' && inputMode !== 'video' && (
           <div className="w-full max-w-2xl grid grid-cols-1 md:grid-cols-2 gap-8 mb-8 animate-in fade-in duration-300">
             
             {/* Aspect Ratio */}
@@ -646,8 +866,8 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* Generate Action Button (Hidden in Analyze Mode) */}
-        {inputMode !== 'analyze' && (
+        {/* Generate Action Button (Hidden in Analyze, Edit, and Video Mode) */}
+        {inputMode !== 'analyze' && inputMode !== 'edit' && inputMode !== 'video' && (
           <div className="mb-16">
             <button
               onClick={handleGenerate}
@@ -699,8 +919,34 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* Results Grid (Hidden in Analyze Mode) */}
-        {inputMode !== 'analyze' && (
+        {/* Video Results */}
+        {inputMode === 'video' && generatedVideoUrl && (
+           <div className="w-full max-w-4xl animate-in fade-in slide-in-from-bottom-8 duration-700 pb-20 flex flex-col items-center">
+              <h3 className="text-xl font-bold mb-4 text-slate-900 dark:text-white">{t('video.generated')}</h3>
+              <div className="rounded-2xl overflow-hidden shadow-2xl border border-slate-200 dark:border-slate-800 bg-black">
+                  <video 
+                    src={generatedVideoUrl} 
+                    controls 
+                    autoPlay 
+                    loop 
+                    className="max-w-full max-h-[70vh]"
+                  />
+              </div>
+              <div className="mt-6">
+                 <a 
+                   href={generatedVideoUrl} 
+                   download="veo-generated-video.mp4"
+                   className="px-6 py-3 bg-slate-800 dark:bg-slate-700 hover:bg-slate-900 dark:hover:bg-slate-600 text-white rounded-full font-medium transition-colors flex items-center gap-2"
+                 >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/></svg>
+                    {t('video.download')}
+                 </a>
+              </div>
+           </div>
+        )}
+
+        {/* Results Grid (Hidden in Analyze and Video Mode) */}
+        {inputMode !== 'analyze' && inputMode !== 'video' && (
           <div className="w-full px-4 pb-20">
             {generatedViews.length > 0 && (
               <div className="animate-in fade-in slide-in-from-bottom-8 duration-700">
